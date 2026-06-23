@@ -37,9 +37,10 @@ SSH_CTRL_OPTS=(-o ControlMaster=auto
 
 MCHARS='ｦｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃ01#!@%&*'
 
-_anim_enabled() { [[ -t 1 && -z "${NO_COLOR-}" && -z "${NO_ANIM-}" ]]; }
-_hide_cursor()  { printf '\033[?25l'; }
-_show_cursor()  { printf '\033[?25h'; }
+_CURSOR_HIDDEN=0
+_anim_enabled()  { [[ -t 1 && -z "${NO_COLOR-}" && -z "${NO_ANIM-}" ]]; }
+_hide_cursor()   { _CURSOR_HIDDEN=1; printf '\033[?25l'; }
+_show_cursor()   { _CURSOR_HIDDEN=0; printf '\033[?25h'; }
 _clear_line()   { printf '\033[2K\r'; }
 _move_up()      { printf '\033[%dA' "${1:-1}"; }
 
@@ -132,7 +133,7 @@ _spinner_stop() {
     _clear_line
 }
 
-trap '_show_cursor' EXIT INT TERM
+trap '[[ $_CURSOR_HIDDEN -eq 1 ]] && printf '\''\033[?25h'\''' EXIT INT TERM
 
 # ── Core helpers ───────────────────────────────────────────────────────────────
 
@@ -167,29 +168,52 @@ usage() {
 
 # ── Fleet sync helpers ─────────────────────────────────────────────────────────
 
+_sync_remote_dir() { printf '%s' "${SYNC_REMOTE_PATH%/*}"; }
+
 _sync_push() {
     [[ -z "$SYNC_HOST" ]] && return 0
+    local rdir; rdir=$(_sync_remote_dir)
     if scp -q -o BatchMode=yes -o ConnectTimeout=5 \
             "$MAPFILE" "${SYNC_HOST}:${SYNC_REMOTE_PATH}" 2>/dev/null; then
+        # Bump version file so all clients know to pull within 30s
+        local ver; ver=$(date +%s)
+        ssh -q -o BatchMode=yes -o ConnectTimeout=5 \
+            "$SYNC_HOST" "echo $ver > ~/${rdir}/.machines_version" 2>/dev/null
+        echo "$ver" > "$CONFIG_DIR/.machines_version" 2>/dev/null
         printf "  ${GREEN}synced${RESET} → %s\n" "$SYNC_HOST"
         touch "$CONFIG_DIR/.last_sync" 2>/dev/null
     fi
     # Push failure is silent — no access or server down; change is saved locally
 }
 
-# Background pull — fires at most once per 10 min; never blocks the prompt
+# Background version check — fires every 30s; pulls only when fleet actually changed
 _sync_bg() {
     [[ -z "$SYNC_HOST" ]] && return
     local stamp="$CONFIG_DIR/.last_sync"
     local age=99999
-    if [[ -f "$stamp" ]]; then
-        age=$(( $(date +%s) - $(stat -c %Y "$stamp" 2>/dev/null || echo 0) ))
-    fi
-    (( age < 600 )) && return
+    [[ -f "$stamp" ]] && age=$(( $(date +%s) - $(stat -c %Y "$stamp" 2>/dev/null || echo 0) ))
+    (( age < 30 )) && return
+    local rdir; rdir=$(_sync_remote_dir)
+    local local_ver="$CONFIG_DIR/.machines_version"
     (
-        scp -q -o BatchMode=yes -o ConnectTimeout=5 \
-            "${SYNC_HOST}:${SYNC_REMOTE_PATH}" "$MAPFILE" 2>/dev/null
         touch "$stamp" 2>/dev/null
+        local tmp_ver; tmp_ver=$(mktemp)
+        # Fetch tiny version file — cheap check before pulling the full fleet
+        if scp -q -o BatchMode=yes -o ConnectTimeout=5 \
+                "${SYNC_HOST}:${rdir}/.machines_version" "$tmp_ver" 2>/dev/null; then
+            if ! diff -q "$tmp_ver" "$local_ver" &>/dev/null; then
+                # Version changed — pull machines.txt and update local version
+                if scp -q -o BatchMode=yes -o ConnectTimeout=5 \
+                        "${SYNC_HOST}:${SYNC_REMOTE_PATH}" "$MAPFILE" 2>/dev/null; then
+                    cp "$tmp_ver" "$local_ver" 2>/dev/null
+                fi
+            fi
+        else
+            # No version file yet — pull unconditionally (first sync or legacy server)
+            scp -q -o BatchMode=yes -o ConnectTimeout=5 \
+                "${SYNC_HOST}:${SYNC_REMOTE_PATH}" "$MAPFILE" 2>/dev/null
+        fi
+        rm -f "$tmp_ver"
     ) &
     disown $!
 }
@@ -559,20 +583,30 @@ case "$1" in
         ssh -q -o BatchMode=yes -o ConnectTimeout=10 \
             "$SYNC_HOST" "mkdir -p \$(dirname ~/${SYNC_REMOTE_PATH})" 2>/dev/null
 
+        _sync_rdir=$(_sync_remote_dir)
         # Pull remote → local; if remote has no file yet, push ours as the seed
         if scp -q -o BatchMode=yes -o ConnectTimeout=10 \
                 "${SYNC_HOST}:${SYNC_REMOTE_PATH}" "$MAPFILE" 2>/dev/null; then
             printf "  ${GREEN}pulled${RESET}   %s:%s\n" "$SYNC_HOST" "$SYNC_REMOTE_PATH"
+            # Grab the remote version file so bg-check knows we're current
+            scp -q -o BatchMode=yes -o ConnectTimeout=5 \
+                "${SYNC_HOST}:${_sync_rdir}/.machines_version" \
+                "$CONFIG_DIR/.machines_version" 2>/dev/null
             touch "$CONFIG_DIR/.last_sync" 2>/dev/null
-            printf "  ${DIM}next auto-pull in 10 min${RESET}\n"
+            printf "  ${DIM}next background check in 30s${RESET}\n"
         else
             # Try to push (seeds remote if it doesn't exist yet)
             if scp -q -o BatchMode=yes -o ConnectTimeout=10 \
                     "$MAPFILE" "${SYNC_HOST}:${SYNC_REMOTE_PATH}" 2>/dev/null; then
+                # Bump version file so everyone picks it up
+                _sync_ver=$(date +%s)
+                ssh -q -o BatchMode=yes -o ConnectTimeout=5 \
+                    "$SYNC_HOST" "echo $_sync_ver > ~/${_sync_rdir}/.machines_version" 2>/dev/null
+                echo "$_sync_ver" > "$CONFIG_DIR/.machines_version" 2>/dev/null
                 printf "  ${GREEN}pushed${RESET}   %s → %s:%s\n" \
                     "$MAPFILE" "$SYNC_HOST" "$SYNC_REMOTE_PATH"
                 touch "$CONFIG_DIR/.last_sync" 2>/dev/null
-                printf "  ${DIM}next auto-pull in 10 min${RESET}\n"
+                printf "  ${DIM}next background check in 30s${RESET}\n"
             else
                 printf "  ${DIM}fleet server unreachable — using local copy${RESET}\n"
             fi

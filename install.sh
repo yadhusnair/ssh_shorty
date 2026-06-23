@@ -41,7 +41,7 @@ if [ ! -f "$CONFIG_DIR/config" ]; then
 # Optional — override the remote path (default: ~/validation/machines.txt):
 #   SYNC_REMOTE_PATH=validation/machines.txt
 
-SYNC_HOST="ati@192.168.6.12"
+SYNC_HOST=""
 EOF
     echo "  Installed: $CONFIG_DIR/config  (edit to enable fleet sync)"
 else
