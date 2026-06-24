@@ -58,6 +58,8 @@ _ssh_shorty() {
     done | sort -u
   }
 
+  # Called after compset -P '*:' has moved 'nick:' into IPREFIX.
+  # Adds bare paths so zsh matches them against just the partial.
   _remote_paths_for() {
     local nick="$1" partial="$2"
     local target
@@ -81,14 +83,19 @@ _ssh_shorty() {
       print -l -- "${paths[@]}" > "$cache_file"
     fi
 
-    compadd -f -Q -- "${paths[@]/#/${nick}:}"
+    compadd -f -Q -S '' -- "${paths[@]}"
   }
 
-  # For nick:<TAB>: offer aliases first, fall back to remote path completion
+  # For nick:<TAB>: strip 'nick:' from PREFIX via compset so bare alias/path
+  # names are matched against just the partial after the colon.
   _nick_colon_complete() {
     local token="$1"
     local nick="${token%%:*}"
     local partial="${token#*:}"
+
+    # Move 'nick:' into IPREFIX so completions match only the path/alias part
+    compset -P '*:'
+
     if [[ "$partial" != /* && "$partial" != ~* ]]; then
       local -a nick_aliases
       nick_aliases=(${(f)"$(_aliases_for_nick "$nick")"})

@@ -583,7 +583,12 @@ case "$1" in
             NICK="${DEST%%:*}"; REMOTE_PATH="${DEST#*:}"
             # Resolve alias if remote path doesn't look like an absolute path
             if [[ "$REMOTE_PATH" != /* && "$REMOTE_PATH" != ~* ]]; then
-                RESOLVED=$(_resolve_alias "$NICK" "$REMOTE_PATH") && REMOTE_PATH="$RESOLVED"
+                RESOLVED=$(_resolve_alias "$NICK" "$REMOTE_PATH") || {
+                    printf "Alias '%s' not found for '%s'.\n" "$REMOTE_PATH" "$NICK" >&2
+                    printf "Check %s or use an absolute path.\n" "$PATHS_FILE" >&2
+                    exit 1
+                }
+                REMOTE_PATH="$RESOLVED"
             fi
         else
             NICK="$DEST"; REMOTE_PATH="~/"
