@@ -156,13 +156,14 @@ _ssh_shorty() {
           local -a matches=()
           local fav
           for fav in "${favs[@]}"; do
-            [[ "$fav" == "${raw}"* ]] && matches+=( "\"${fav}\"" )
+            [[ "$fav" == "${raw}"* ]] && matches+=("$fav")
           done
           if (( ${#matches} > 0 )); then
-            # Insert quoted favorite, space after, cursor after closing "
-            compadd -Q -U -S ' ' -- "${matches[@]}"
+            # Pass bare strings — zsh auto-escapes spaces as docker\ restart\ mule
+            # (embedding " in the candidate causes ZLE to swallow the rest of the line)
+            compadd -U -S ' ' -- "${matches[@]}"
           else
-            # No match: wrap current input in quotes; -S '"' puts cursor BEFORE the closing "
+            # No match: wrap typed text in quotes; -S '"' positions cursor BEFORE closing "
             compadd -Q -U -P '"' -S '"' -- "${raw}${SUFFIX#['\"]}"
           fi
         fi
