@@ -37,6 +37,7 @@ _ssh_shorty() {
     '--paths:open machine-paths.txt and sync'
     '--help:show usage'
     '--update:check for and apply updates'
+    '--fav:save/list/remove favorite run commands'
     '--status:parallel online/offline status table'
     '--watch:live-refreshing fleet status'
     '--sysinfo:live resource dashboard'
@@ -145,6 +146,20 @@ _ssh_shorty() {
         ;;
       --run|--keydeploy|--close|-m)
         (( CURRENT == 3 )) && _nick_or_group
+        if [[ "$first" == "--run" ]] && (( CURRENT == 4 )); then
+          local favs_file="$HOME/.config/ssh_shorty/favorites.txt"
+          local -a favs=() matches=()
+          [[ -f "$favs_file" ]] && favs=(${(f)"$(grep -v '^#\|^[[:space:]]*$' "$favs_file" 2>/dev/null)"})
+          matches=(${(M)favs:#${PREFIX}*})
+          if (( ${#matches} > 0 )); then
+            compadd -Q -S ' ' -- "${matches[@]}"
+          else
+            # No match: insert "" with cursor between the quotes
+            local _base="${LBUFFER%$PREFIX}"
+            LBUFFER="${_base}\"\""
+            CURSOR=$(( ${#LBUFFER} - 1 ))
+          fi
+        fi
         ;;
       --run-script)
         if (( CURRENT == 3 )); then
@@ -187,6 +202,16 @@ _ssh_shorty() {
           compadd -S ' ' -- "${machines[@]}"
         elif (( CURRENT == 4 )); then
           compadd -S ' ' -- "${tags_raw[@]}"
+        fi
+        ;;
+      --fav)
+        if (( CURRENT == 3 )); then
+          local favs_file="$HOME/.config/ssh_shorty/favorites.txt"
+          local -a favs=()
+          [[ -f "$favs_file" ]] && favs=(${(f)"$(grep -v '^#\|^[[:space:]]*$' "$favs_file" 2>/dev/null)"})
+          local -a fav_cmds=('--list:list favorites' '--edit:open in $EDITOR' '--remove:remove a favorite')
+          _describe 'option' fav_cmds
+          (( ${#favs} > 0 )) && compadd -Q -S ' ' -- "${favs[@]}"
         fi
         ;;
       --last|--add|--edit|--import|--help|--export-ssh-config)

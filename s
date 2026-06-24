@@ -7,6 +7,7 @@ REPO_RAW="https://raw.githubusercontent.com/yadhusnair/ssh_shorty/main"
 MAPFILE="$HOME/.config/ssh_shorty/machines.txt"
 PATHS_FILE="$HOME/.config/ssh_shorty/machine-paths.txt"
 CONFIG_DIR="$HOME/.config/ssh_shorty"
+FAVS_FILE="$CONFIG_DIR/favorites.txt"
 HISTORY_DIR="$HOME/.local/share/ssh_shorty"
 HISTORY_FILE="$HISTORY_DIR/history"
 CACHE_DIR="$HOME/.cache/ssh_shorty"
@@ -1297,6 +1298,48 @@ case "$1" in
         [[ ! -f "$PATHS_FILE" ]] && touch "$PATHS_FILE"
         ${EDITOR:-nano} "$PATHS_FILE"
         _sync_push_paths
+        ;;
+
+    --fav)
+        mkdir -p "$CONFIG_DIR"
+        touch "$FAVS_FILE" 2>/dev/null
+        case "${2-}" in
+            --list|-l)
+                if ! grep -qv '^#\|^[[:space:]]*$' "$FAVS_FILE" 2>/dev/null; then
+                    printf "No favorites saved. Add one with: s --fav \"command\"\n"
+                else
+                    printf "${BOLD}Saved favorites:${RESET}\n"
+                    grep -v '^#\|^[[:space:]]*$' "$FAVS_FILE" | nl -ba
+                fi
+                ;;
+            --edit|-e)
+                "${EDITOR:-nano}" "$FAVS_FILE"
+                ;;
+            --remove)
+                [[ -z "${3-}" ]] && { printf "Usage: s --fav --remove \"command\"\n"; exit 1; }
+                if grep -qxF "$3" "$FAVS_FILE" 2>/dev/null; then
+                    grep -vxF "$3" "$FAVS_FILE" > "${FAVS_FILE}.tmp" && mv "${FAVS_FILE}.tmp" "$FAVS_FILE"
+                    printf "Removed: %s\n" "$3"
+                else
+                    printf "Not found: %s\n" "$3"; exit 1
+                fi
+                ;;
+            "")
+                printf "Usage:\n"
+                printf "  s --fav \"docker restart mule\"   # save a favorite command\n"
+                printf "  s --fav --list                  # list all favorites\n"
+                printf "  s --fav --remove \"command\"      # remove a favorite\n"
+                printf "  s --fav --edit                  # open favorites file in \$EDITOR\n"
+                ;;
+            *)
+                if grep -qxF "$2" "$FAVS_FILE" 2>/dev/null; then
+                    printf "Already saved: %s\n" "$2"
+                else
+                    printf '%s\n' "$2" >> "$FAVS_FILE"
+                    printf "${GREEN}Saved:${RESET} %s\n" "$2"
+                fi
+                ;;
+        esac
         ;;
 
     --update)

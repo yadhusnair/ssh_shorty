@@ -14,7 +14,7 @@ _ssh_shorty_complete() {
         [[ "${COMP_WORDS[i]}" == ":" ]] && (( cword -= 2 ))
     done
 
-    local subcommands="--list --add --set --remove --tag --sync --ping --poll --edit --paths --help --update --status --watch --run --run-script --sysinfo --tail --tunnel --close --export-ssh-config --keydeploy --last --import -u --upload -d --download -m"
+    local subcommands="--list --add --set --remove --tag --sync --ping --poll --edit --paths --help --update --fav --status --watch --run --run-script --sysinfo --tail --tunnel --close --export-ssh-config --keydeploy --last --import -u --upload -d --download -m"
     local mapfile_path="$HOME/.config/ssh_shorty/machines.txt"
     local paths_file="$HOME/.config/ssh_shorty/machine-paths.txt"
     local machines=()
@@ -140,6 +140,20 @@ _ssh_shorty_complete() {
                 ;;
             --run|--keydeploy|--close|-m)
                 [[ "$cword" -eq 2 ]] && _complete_nick_or_group "$cur"
+                if [[ "$first" == "--run" && "$cword" -eq 3 ]]; then
+                    local favs_file="$HOME/.config/ssh_shorty/favorites.txt"
+                    local -a favs=() matches=()
+                    [[ -f "$favs_file" ]] && mapfile -t favs < <(grep -v '^#\|^[[:space:]]*$' "$favs_file" 2>/dev/null)
+                    for fav in "${favs[@]}"; do
+                        local qfav; printf -v qfav '%q' "$fav"
+                        [[ "$qfav" == "$cur"* ]] && matches+=("$qfav")
+                    done
+                    if [[ ${#matches[@]} -gt 0 ]]; then
+                        COMPREPLY=( "${matches[@]}" )
+                    else
+                        COMPREPLY=( '""' )
+                    fi
+                fi
                 ;;
             --run-script)
                 if [[ "$cword" -eq 2 ]]; then
@@ -191,6 +205,16 @@ _ssh_shorty_complete() {
                     # the command auto-prepends '#' when it receives the plain name.
                     mapfile -t tags_raw < <(_get_tags_raw | sed 's/^#//')
                     COMPREPLY=( $(compgen -W "${tags_raw[*]}" -- "$cur") )
+                fi
+                ;;
+            --fav)
+                if [[ "$cword" -eq 2 ]]; then
+                    local -a saved=()
+                    [[ -f "$HOME/.config/ssh_shorty/favorites.txt" ]] && \
+                        mapfile -t saved < <(grep -v '^#\|^[[:space:]]*$' "$HOME/.config/ssh_shorty/favorites.txt" 2>/dev/null)
+                    local -a qsaved=()
+                    for f in "${saved[@]}"; do local q; printf -v q '%q' "$f"; qsaved+=("$q"); done
+                    COMPREPLY=( $(compgen -W "--list --edit --remove ${qsaved[*]}" -- "$cur") )
                 fi
                 ;;
             --last|--add|--edit|--import|--help|--export-ssh-config)

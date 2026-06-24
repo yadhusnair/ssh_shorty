@@ -34,6 +34,22 @@ else
     echo "  Installed: $CONFIG_DIR/machine-paths.txt  (edit to add path aliases)"
 fi
 
+# Create favorites.txt (don't overwrite if it already exists)
+if [ ! -f "$CONFIG_DIR/favorites.txt" ]; then
+    cat > "$CONFIG_DIR/favorites.txt" << 'EOF'
+# Favorite commands for s --run
+# One command per line. Tab-complete them with: s --run <nick> <TAB>
+# Add new ones with: s --fav "docker restart mule"
+docker ps
+docker restart mule
+systemctl status
+journalctl -f
+EOF
+    echo "  Installed: $CONFIG_DIR/favorites.txt  (edit to add your own)"
+else
+    echo "  Skipped:   $CONFIG_DIR/favorites.txt (already exists)"
+fi
+
 # Create config file template (don't overwrite)
 if [ ! -f "$CONFIG_DIR/config" ]; then
     cat > "$CONFIG_DIR/config" << 'EOF'
