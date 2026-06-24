@@ -38,7 +38,13 @@ _ssh_shorty() {
     '--help:show usage'
     '--status:parallel online/offline status table'
     '--watch:live-refreshing fleet status'
+    '--sysinfo:live resource dashboard'
     '--run:run command on one or many devices'
+    '--run-script:run local script remotely'
+    '--tail:tail a remote log using alias'
+    '--tunnel:open SSH tunnel'
+    '-t:open SSH tunnel'
+    '-m:tmux synchronized panes'
     '--close:close ControlMaster socket'
     '--export-ssh-config:write machines.txt to ~/.ssh/config'
     '--keydeploy:deploy SSH key via ssh-copy-id'
@@ -130,14 +136,30 @@ _ssh_shorty() {
     fi
   else
     case "$first" in
-      --set|--remove|--ping|--poll)
+      --set|--remove|--ping|--poll|--tunnel|-t)
         (( CURRENT == 3 )) && _describe 'machine' machines
         ;;
-      --status|--list|--watch)
+      --status|--list|--watch|--sysinfo)
         (( CURRENT == 3 )) && compadd -S ' ' -- "${groups[@]}"
         ;;
-      --run|--keydeploy|--close)
+      --run|--keydeploy|--close|-m)
         (( CURRENT == 3 )) && _nick_or_group
+        ;;
+      --run-script)
+        if (( CURRENT == 3 )); then
+          _nick_or_group
+        elif (( CURRENT == 4 )); then
+          _files
+        fi
+        ;;
+      --tail)
+        if (( CURRENT == 3 )); then
+          _describe 'machine' machines
+        elif (( CURRENT == 4 )); then
+          local -a nick_aliases
+          nick_aliases=(${(f)"$(_aliases_for_nick "${words[3]}")"})
+          compadd -S '' -- "${nick_aliases[@]}"
+        fi
         ;;
       -d|--download)
         if (( CURRENT == 3 )); then

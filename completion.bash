@@ -14,7 +14,7 @@ _ssh_shorty_complete() {
         [[ "${COMP_WORDS[i]}" == ":" ]] && (( cword -= 2 ))
     done
 
-    local subcommands="--list --add --set --remove --tag --sync --ping --poll --edit --paths --help --status --watch --run --close --export-ssh-config --keydeploy --last --import -u --upload -d --download"
+    local subcommands="--list --add --set --remove --tag --sync --ping --poll --edit --paths --help --status --watch --run --run-script --sysinfo --tail --tunnel --close --export-ssh-config --keydeploy --last --import -u --upload -d --download -m"
     local mapfile_path="$HOME/.config/ssh_shorty/machines.txt"
     local paths_file="$HOME/.config/ssh_shorty/machine-paths.txt"
     local machines=()
@@ -128,18 +128,34 @@ _ssh_shorty_complete() {
         fi
     else
         case "$first" in
-            --set|-s|--remove|-r|--ping|-p|--poll)
+            --set|-s|--remove|-r|--ping|-p|--poll|--tunnel|-t)
                 [[ "$cword" -eq 2 ]] && \
                     COMPREPLY=( $(compgen -W "${machines[*]}" -- "$cur") )
                 ;;
-            --status|--list|--watch)
+            --status|--list|--watch|--sysinfo)
                 if [[ "$cword" -eq 2 && "$cur" == @* ]]; then
                     local -a groups; mapfile -t groups < <(_get_groups)
                     COMPREPLY=( $(compgen -W "${groups[*]}" -- "$cur") )
                 fi
                 ;;
-            --run|--keydeploy|--close)
+            --run|--keydeploy|--close|-m)
                 [[ "$cword" -eq 2 ]] && _complete_nick_or_group "$cur"
+                ;;
+            --run-script)
+                if [[ "$cword" -eq 2 ]]; then
+                    _complete_nick_or_group "$cur"
+                elif [[ "$cword" -eq 3 ]]; then
+                    COMPREPLY=( $(compgen -f -- "$cur") )
+                fi
+                ;;
+            --tail)
+                if [[ "$cword" -eq 2 ]]; then
+                    COMPREPLY=( $(compgen -W "${machines[*]}" -- "$cur") )
+                elif [[ "$cword" -eq 3 ]]; then
+                    local -a aliases
+                    mapfile -t aliases < <(_get_aliases_for_nick "${COMP_WORDS[2]}")
+                    COMPREPLY=( $(compgen -W "${aliases[*]}" -- "$cur") )
+                fi
                 ;;
             -d|--download)
                 if [[ "$cword" -eq 2 ]]; then
