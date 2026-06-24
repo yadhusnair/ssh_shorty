@@ -11,12 +11,18 @@ _ssh_shorty() {
   groups=(${(f)"$(awk 'NF >= 2 && $1 !~ /^#/ {
     for(i=3;i<=NF;i++) if($i~/^#/) { gsub(/^#/,"@",$i); print $i }
   }' "$mapfile" 2>/dev/null | sort -u)"})
+  tags_raw=(${(f)"$(awk 'NF >= 2 && $1 !~ /^#/ {
+    for(i=3;i<=NF;i++) if($i~/^#/) print $i
+  }' "$mapfile" 2>/dev/null | sort -u)"})
 
   subcommands=(
+    '-u:upload file/dir to device'
+    '--upload:upload file/dir to device'
     '--list:list all devices'
     '--add:add a new device'
     '--set:update a device IP'
     '--remove:remove a device'
+    '--tag:add a tag to a device'
     '--sync:pull/push fleet from SYNC_HOST'
     '--ping:check reachability'
     '--poll:wait until online then connect'
@@ -92,6 +98,24 @@ _ssh_shorty() {
         ;;
       --run|--keydeploy|--close)
         (( CURRENT == 3 )) && _nick_or_group
+        ;;
+      -u|--upload)
+        if (( CURRENT == 3 )); then
+          _files
+        elif (( CURRENT == 4 )); then
+          if [[ "$PREFIX" == *:* ]]; then
+            _remote_paths_for "$PREFIX"
+          else
+            compadd -S '' -- "${machines[@]}"
+          fi
+        fi
+        ;;
+      --tag)
+        if (( CURRENT == 3 )); then
+          compadd -S ' ' -- "${machines[@]}"
+        elif (( CURRENT == 4 )); then
+          compadd -S ' ' -- "${tags_raw[@]}"
+        fi
         ;;
       --last|--add|--edit|--import|--help|--export-ssh-config)
         ;; # no further completion for these

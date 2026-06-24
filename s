@@ -153,7 +153,9 @@ usage() {
     printf "  s --close <nick|@group|--all>               close ControlMaster socket\n"
     printf "  s --add <nickname> <user@ip> [#tags]        add a device\n"
     printf "  s --set <nickname> <user@ip>                update a device's IP\n"
+    printf "  s -u <local-path> <nick>[:/remote/path]     upload file/dir to device\n"
     printf "  s --remove <nickname>                       remove a device\n"
+    printf "  s --tag <nickname> #tag                     add a tag to a device\n"
     printf "  s --sync                                    pull/push fleet from SYNC_HOST\n"
     printf "  s --ping <nickname>                         check reachability\n"
     printf "  s --poll <nickname>                         wait until online then connect\n"
@@ -528,6 +530,25 @@ case "$1" in
         fi
         ;;
 
+    -u|--upload)
+        [[ -z "$2" || -z "$3" ]] && {
+            printf "Usage: s -u <local-path> <nick>[:/remote/path]\n"; exit 1; }
+        LOCAL_PATH="$2"; DEST="$3"
+        if [[ "$DEST" == *:* ]]; then
+            NICK="${DEST%%:*}"; REMOTE_PATH="${DEST#*:}"
+        else
+            NICK="$DEST"; REMOTE_PATH="~/"
+        fi
+        TARGET=$(_lookup_target "$NICK")
+        [[ -z "$TARGET" ]] && { printf "Nickname not found: %s\n" "$NICK"; exit 1; }
+        _load_device_opts "$NICK"
+        ssh_cmd="ssh"
+        for o in "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}"; do ssh_cmd+=" $o"; done
+        _anim_enabled && _glitch_line \
+            "Uploading  ${LOCAL_PATH}  →  ${NICK}:${REMOTE_PATH}" "${BOLD}${GREEN}"
+        rsync -avP -e "$ssh_cmd" "$LOCAL_PATH" "$TARGET:$REMOTE_PATH"
+        ;;
+
     --add|-a)
         [[ -z "$2" || -z "$3" ]] && {
             printf "Usage: s --add <nickname> <user@ip> [#tag ...]\n"; exit 1; }
@@ -561,6 +582,25 @@ case "$1" in
             printf "Nickname '%s' not found.\n" "$2"; exit 1; }
         _inplace_edit awk -v n="$2" '$1 != n' "$MAPFILE"
         printf "Removed: %s\n" "$2"
+        _sync_push
+        ;;
+
+    --tag)
+        [[ -z "$2" || -z "$3" ]] && {
+            printf "Usage: s --tag <nickname> #tag\n"; exit 1; }
+        _require_mapfile
+        NICK="$2"; TAG="$3"
+        [[ "$TAG" != "#"* ]] && TAG="#$TAG"
+        _nick_exists "$NICK" || {
+            printf "Nickname '%s' not found.\n" "$NICK"; exit 1; }
+        if awk -v n="$NICK" -v t="$TAG" \
+               'NF >= 2 && $1 == n { for (i=3; i<=NF; i++) if ($i == t) { found=1; exit } }
+                END { exit !found }' "$MAPFILE"; then
+            printf "Tag '%s' already on '%s'.\n" "$TAG" "$NICK"; exit 0
+        fi
+        _inplace_edit awk -v n="$NICK" -v t="$TAG" \
+            '$1 == n { $0 = $0 " " t } { print }' "$MAPFILE"
+        printf "Tagged: %s → %s\n" "$NICK" "$TAG"
         _sync_push
         ;;
 

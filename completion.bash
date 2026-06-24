@@ -1,14 +1,32 @@
 _ssh_shorty_complete() {
-    local cur
-    cur="${COMP_WORDS[COMP_CWORD]}"
+    local cur="${COMP_WORDS[COMP_CWORD]}"
 
-    local subcommands="--list --add --set --remove --sync --ping --poll --edit --help --status --watch --run --close --export-ssh-config --keydeploy --last --import"
+    # bash breaks on ':' by default, so "fm14:/hom" becomes three tokens:
+    # ["fm14", ":", "/hom"]. Detect that case and track the nick separately.
+    local nick_for_path=""
+    if [[ $COMP_CWORD -ge 2 && "${COMP_WORDS[COMP_CWORD-1]}" == ":" ]]; then
+        nick_for_path="${COMP_WORDS[COMP_CWORD-2]}"
+    fi
+
+    # Compute logical word index: each colon-pair inflates COMP_CWORD by 2.
+    local cword=$COMP_CWORD i
+    for (( i=1; i<COMP_CWORD; i++ )); do
+        [[ "${COMP_WORDS[i]}" == ":" ]] && (( cword -= 2 ))
+    done
+
+    local subcommands="--list --add --set --remove --tag --sync --ping --poll --edit --help --status --watch --run --close --export-ssh-config --keydeploy --last --import -u --upload"
     local mapfile_path="$HOME/.config/ssh_shorty/machines.txt"
     local machines=()
 
     if [[ -f "$mapfile_path" ]]; then
         mapfile -t machines < <(awk 'NF >= 2 && $1 !~ /^#/ {print $1}' "$mapfile_path" 2>/dev/null)
     fi
+
+    _get_tags_raw() {
+        awk 'NF >= 2 && $1 !~ /^#/ {
+            for (i=3; i<=NF; i++) if ($i ~ /^#/) print $i
+        }' "$mapfile_path" 2>/dev/null | sort -u
+    }
 
     _get_groups() {
         awk 'NF >= 2 && $1 !~ /^#/ {
@@ -28,11 +46,11 @@ _ssh_shorty_complete() {
         fi
     }
 
-    # Remote path completion with 30s cache
+    # Remote path completion with 30s cache.
+    # COMPREPLY is set to bare paths (no nick: prefix) — readline inserts them
+    # right after the ':' word-break, so the final result is nick:/path.
     _complete_nick_path() {
-        local token="$1"
-        local nick="${token%%:*}"
-        local partial="${token#*:}"
+        local nick="$1" partial="$2"
         local target
         target=$(awk -v n="$nick" '$1 == n {print $2; exit}' "$mapfile_path" 2>/dev/null)
         [[ -z "$target" ]] && return
@@ -55,50 +73,70 @@ _ssh_shorty_complete() {
             printf '%s\n' "${remote_paths[@]}" > "$cache_file"
         fi
 
-        COMPREPLY=( "${remote_paths[@]/#/${nick}:}" )
+        # Bare paths — readline places them after the ':' word-break automatically
+        COMPREPLY=( "${remote_paths[@]}" )
         compopt -o nospace
     }
 
     local first="${COMP_WORDS[1]}"
 
-    if [[ "$COMP_CWORD" -eq 1 ]]; then
-        # Completing the first argument
-        if [[ "$cur" == -* ]]; then
+    if [[ "$cword" -eq 1 ]]; then
+        if [[ -n "$nick_for_path" ]]; then
+            _complete_nick_path "$nick_for_path" "$cur"
+        elif [[ "$cur" == -* ]]; then
             COMPREPLY=( $(compgen -W "$subcommands" -- "$cur") )
         elif [[ "$cur" == @* ]]; then
             local -a groups
             mapfile -t groups < <(_get_groups)
             COMPREPLY=( $(compgen -W "${groups[*]}" -- "$cur") )
-        elif [[ "$cur" == *:* ]]; then
-            _complete_nick_path "$cur"
         else
             COMPREPLY=( $(compgen -W "${machines[*]}" -- "$cur") )
             compopt -o nospace
         fi
     else
-        # Completing second argument and beyond
         case "$first" in
             --set|-s|--remove|-r|--ping|-p|--poll)
-                [[ "$COMP_CWORD" -eq 2 ]] && \
+                [[ "$cword" -eq 2 ]] && \
                     COMPREPLY=( $(compgen -W "${machines[*]}" -- "$cur") )
                 ;;
             --status|--list|--watch)
-                if [[ "$COMP_CWORD" -eq 2 && "$cur" == @* ]]; then
+                if [[ "$cword" -eq 2 && "$cur" == @* ]]; then
                     local -a groups; mapfile -t groups < <(_get_groups)
                     COMPREPLY=( $(compgen -W "${groups[*]}" -- "$cur") )
                 fi
                 ;;
             --run|--keydeploy|--close)
-                [[ "$COMP_CWORD" -eq 2 ]] && _complete_nick_or_group "$cur"
+                [[ "$cword" -eq 2 ]] && _complete_nick_or_group "$cur"
+                ;;
+            -u|--upload)
+                if [[ "$cword" -eq 2 ]]; then
+                    COMPREPLY=( $(compgen -f -- "$cur") )
+                    compopt -o nospace
+                elif [[ "$cword" -eq 3 ]]; then
+                    if [[ -n "$nick_for_path" ]]; then
+                        _complete_nick_path "$nick_for_path" "$cur"
+                    else
+                        COMPREPLY=( $(compgen -W "${machines[*]}" -- "$cur") )
+                        compopt -o nospace
+                    fi
+                fi
+                ;;
+            --tag)
+                if [[ "$cword" -eq 2 ]]; then
+                    COMPREPLY=( $(compgen -W "${machines[*]}" -- "$cur") )
+                elif [[ "$cword" -eq 3 ]]; then
+                    local -a tags_raw
+                    mapfile -t tags_raw < <(_get_tags_raw)
+                    COMPREPLY=( $(compgen -W "${tags_raw[*]}" -- "$cur") )
+                fi
                 ;;
             --last|--add|--edit|--import|--help|--export-ssh-config)
-                ;; # no further completion for these
+                ;;
             *)
-                # First arg is a nickname (not a flag) — multi-device or rsync
-                if [[ "$cur" == *:* ]]; then
-                    _complete_nick_path "$cur"
+                # First arg is a nick — rsync pull or multi-device
+                if [[ -n "$nick_for_path" ]]; then
+                    _complete_nick_path "$nick_for_path" "$cur"
                 else
-                    # Multi-device mode: offer nicknames at any depth
                     COMPREPLY=( $(compgen -W "${machines[*]}" -- "$cur") )
                     compopt -o nospace
                 fi
