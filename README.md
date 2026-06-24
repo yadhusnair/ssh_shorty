@@ -40,6 +40,24 @@ What the installer does:
 
 ---
 
+## Updating
+
+**One-time bootstrap** — run this once to get the updater (existing installs don't have it yet):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/yadhusnair/ssh_shorty/main/s -o ~/.local/bin/s && chmod +x ~/.local/bin/s
+```
+
+**After that, updates are automatic.** Every time you run `s`, it checks for a new version in the background (once per day, no delay). When one is found you'll see:
+
+```
+  ↑ update available: 20260625 → 20260701   run: s --update
+```
+
+Run `s --update` to apply it — no git or repo clone needed.
+
+---
+
 ## Fleet sync setup (team)
 
 One shared device holds the authoritative `machines.txt`. Everyone pulls from it automatically; writes push back immediately.
