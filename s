@@ -13,6 +13,8 @@ SSH_CTRL_DIR="$HOME/.ssh/ctrl"
 SYNC_HOST=""
 SYNC_REMOTE_PATH="validation/machines.txt"
 [[ -f "$CONFIG_DIR/config" ]] && source "$CONFIG_DIR/config"
+# Derived — always sits next to machines.txt on the remote
+PATHS_SYNC_REMOTE_PATH="${SYNC_REMOTE_PATH%/*}/machine-paths.txt"
 
 # Colors
 if [[ -t 1 && -z "${NO_COLOR-}" ]]; then
@@ -166,6 +168,7 @@ usage() {
     printf "  s --import                                  import from ~/.ssh/config\n"
     printf "  s --last [n]                                show last n connections\n"
     printf "  s --edit                                    open machines.txt in \$EDITOR\n"
+    printf "  s --paths                                   open machine-paths.txt and sync\n"
     printf "\n"
     printf "  machines.txt extra options: port=N  key=/path/to/key\n"
 }
@@ -179,6 +182,10 @@ _sync_push() {
     local rdir; rdir=$(_sync_remote_dir)
     if scp -q -o BatchMode=yes -o ConnectTimeout=5 \
             "$MAPFILE" "${SYNC_HOST}:${SYNC_REMOTE_PATH}" 2>/dev/null; then
+        # Also push machine-paths.txt alongside machines.txt
+        [[ -f "$PATHS_FILE" ]] && \
+            scp -q -o BatchMode=yes -o ConnectTimeout=5 \
+                "$PATHS_FILE" "${SYNC_HOST}:${PATHS_SYNC_REMOTE_PATH}" 2>/dev/null
         # Bump version file so all clients know to pull within 30s
         local ver; ver=$(date +%s)
         ssh -q -o BatchMode=yes -o ConnectTimeout=5 \
@@ -188,6 +195,22 @@ _sync_push() {
         touch "$CONFIG_DIR/.last_sync" 2>/dev/null
     fi
     # Push failure is silent — no access or server down; change is saved locally
+}
+
+# Push machine-paths.txt only (called after --paths edit)
+_sync_push_paths() {
+    [[ -z "$SYNC_HOST" ]] && return 0
+    [[ ! -f "$PATHS_FILE" ]] && return 0
+    local rdir; rdir=$(_sync_remote_dir)
+    if scp -q -o BatchMode=yes -o ConnectTimeout=5 \
+            "$PATHS_FILE" "${SYNC_HOST}:${PATHS_SYNC_REMOTE_PATH}" 2>/dev/null; then
+        local ver; ver=$(date +%s)
+        ssh -q -o BatchMode=yes -o ConnectTimeout=5 \
+            "$SYNC_HOST" "echo $ver > ~/${rdir}/.machines_version" 2>/dev/null
+        echo "$ver" > "$CONFIG_DIR/.machines_version" 2>/dev/null
+        printf "  ${GREEN}synced${RESET} paths → %s\n" "$SYNC_HOST"
+        touch "$CONFIG_DIR/.last_sync" 2>/dev/null
+    fi
 }
 
 # Background version check — fires every 30s; pulls only when fleet actually changed
@@ -206,9 +229,11 @@ _sync_bg() {
         if scp -q -o BatchMode=yes -o ConnectTimeout=5 \
                 "${SYNC_HOST}:${rdir}/.machines_version" "$tmp_ver" 2>/dev/null; then
             if ! diff -q "$tmp_ver" "$local_ver" &>/dev/null; then
-                # Version changed — pull machines.txt and update local version
+                # Version changed — pull both files and update local version
                 if scp -q -o BatchMode=yes -o ConnectTimeout=5 \
                         "${SYNC_HOST}:${SYNC_REMOTE_PATH}" "$MAPFILE" 2>/dev/null; then
+                    scp -q -o BatchMode=yes -o ConnectTimeout=5 \
+                        "${SYNC_HOST}:${PATHS_SYNC_REMOTE_PATH}" "$PATHS_FILE" 2>/dev/null
                     cp "$tmp_ver" "$local_ver" 2>/dev/null
                 fi
             fi
@@ -216,6 +241,8 @@ _sync_bg() {
             # No version file yet — pull unconditionally (first sync or legacy server)
             scp -q -o BatchMode=yes -o ConnectTimeout=5 \
                 "${SYNC_HOST}:${SYNC_REMOTE_PATH}" "$MAPFILE" 2>/dev/null
+            scp -q -o BatchMode=yes -o ConnectTimeout=5 \
+                "${SYNC_HOST}:${PATHS_SYNC_REMOTE_PATH}" "$PATHS_FILE" 2>/dev/null
         fi
         rm -f "$tmp_ver"
     ) &
@@ -682,6 +709,9 @@ case "$1" in
         if scp -q -o BatchMode=yes -o ConnectTimeout=10 \
                 "${SYNC_HOST}:${SYNC_REMOTE_PATH}" "$MAPFILE" 2>/dev/null; then
             printf "  ${GREEN}pulled${RESET}   %s:%s\n" "$SYNC_HOST" "$SYNC_REMOTE_PATH"
+            scp -q -o BatchMode=yes -o ConnectTimeout=10 \
+                "${SYNC_HOST}:${PATHS_SYNC_REMOTE_PATH}" "$PATHS_FILE" 2>/dev/null \
+                && printf "  ${GREEN}pulled${RESET}   %s:%s\n" "$SYNC_HOST" "$PATHS_SYNC_REMOTE_PATH"
             # Grab the remote version file so bg-check knows we're current
             scp -q -o BatchMode=yes -o ConnectTimeout=5 \
                 "${SYNC_HOST}:${_sync_rdir}/.machines_version" \
@@ -692,6 +722,11 @@ case "$1" in
             # Try to push (seeds remote if it doesn't exist yet)
             if scp -q -o BatchMode=yes -o ConnectTimeout=10 \
                     "$MAPFILE" "${SYNC_HOST}:${SYNC_REMOTE_PATH}" 2>/dev/null; then
+                [[ -f "$PATHS_FILE" ]] && \
+                    scp -q -o BatchMode=yes -o ConnectTimeout=10 \
+                        "$PATHS_FILE" "${SYNC_HOST}:${PATHS_SYNC_REMOTE_PATH}" 2>/dev/null \
+                    && printf "  ${GREEN}pushed${RESET}   %s → %s:%s\n" \
+                        "$PATHS_FILE" "$SYNC_HOST" "$PATHS_SYNC_REMOTE_PATH"
                 # Bump version file so everyone picks it up
                 _sync_ver=$(date +%s)
                 ssh -q -o BatchMode=yes -o ConnectTimeout=5 \
@@ -893,6 +928,13 @@ case "$1" in
 
     --edit|-e)
         _require_mapfile; ${EDITOR:-nano} "$MAPFILE"
+        ;;
+
+    --paths)
+        mkdir -p "$CONFIG_DIR"
+        [[ ! -f "$PATHS_FILE" ]] && touch "$PATHS_FILE"
+        ${EDITOR:-nano} "$PATHS_FILE"
+        _sync_push_paths
         ;;
 
     --help|-h)

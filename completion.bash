@@ -14,7 +14,7 @@ _ssh_shorty_complete() {
         [[ "${COMP_WORDS[i]}" == ":" ]] && (( cword -= 2 ))
     done
 
-    local subcommands="--list --add --set --remove --tag --sync --ping --poll --edit --help --status --watch --run --close --export-ssh-config --keydeploy --last --import -u --upload -d --download"
+    local subcommands="--list --add --set --remove --tag --sync --ping --poll --edit --paths --help --status --watch --run --close --export-ssh-config --keydeploy --last --import -u --upload -d --download"
     local mapfile_path="$HOME/.config/ssh_shorty/machines.txt"
     local paths_file="$HOME/.config/ssh_shorty/machine-paths.txt"
     local machines=()

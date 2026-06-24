@@ -34,6 +34,7 @@ _ssh_shorty() {
     '--ping:check reachability'
     '--poll:wait until online then connect'
     '--edit:open machines.txt in $EDITOR'
+    '--paths:open machine-paths.txt and sync'
     '--help:show usage'
     '--status:parallel online/offline status table'
     '--watch:live-refreshing fleet status'
