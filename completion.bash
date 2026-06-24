@@ -142,17 +142,17 @@ _ssh_shorty_complete() {
                 [[ "$cword" -eq 2 ]] && _complete_nick_or_group "$cur"
                 if [[ "$first" == "--run" && "$cword" -eq 3 ]]; then
                     local favs_file="$HOME/.config/ssh_shorty/favorites.txt"
-                    local -a favs=() matches=()
-                    [[ -f "$favs_file" ]] && mapfile -t favs < <(grep -v '^#\|^[[:space:]]*$' "$favs_file" 2>/dev/null)
-                    local raw_cur="${cur#\"}"  # strip leading " the user may have typed
-                    for fav in "${favs[@]}"; do
-                        [[ "$fav" == "${raw_cur}"* ]] && matches+=( "\"${fav}\"" )
+                    local -a fav_aliases=()
+                    [[ -f "$favs_file" ]] && mapfile -t fav_aliases < <(
+                        awk 'NF>=3 && $2=="=" && $1!~/^#/{print $1}' "$favs_file" 2>/dev/null)
+                    local -a matches=()
+                    for a in "${fav_aliases[@]}"; do
+                        [[ "$a" == "${cur}"* ]] && matches+=("$a")
                     done
                     if [[ ${#matches[@]} -gt 0 ]]; then
                         COMPREPLY=( "${matches[@]}" )
                     else
-                        # Wrap typed text in quotes (cursor ends up after closing " — press ← once)
-                        COMPREPLY=( "\"${raw_cur}\"" )
+                        COMPREPLY=( '""' )
                     fi
                 fi
                 ;;
@@ -209,13 +209,14 @@ _ssh_shorty_complete() {
                 fi
                 ;;
             --fav)
+                local _ffile="$HOME/.config/ssh_shorty/favorites.txt"
+                local -a _faliases=()
+                [[ -f "$_ffile" ]] && mapfile -t _faliases < <(
+                    awk 'NF>=3 && $2=="=" && $1!~/^#/{print $1}' "$_ffile" 2>/dev/null)
                 if [[ "$cword" -eq 2 ]]; then
-                    local -a saved=()
-                    [[ -f "$HOME/.config/ssh_shorty/favorites.txt" ]] && \
-                        mapfile -t saved < <(grep -v '^#\|^[[:space:]]*$' "$HOME/.config/ssh_shorty/favorites.txt" 2>/dev/null)
-                    local -a qsaved=()
-                    for f in "${saved[@]}"; do local q; printf -v q '%q' "$f"; qsaved+=("$q"); done
-                    COMPREPLY=( $(compgen -W "--list --edit --remove ${qsaved[*]}" -- "$cur") )
+                    COMPREPLY=( $(compgen -W "--list --edit --remove ${_faliases[*]}" -- "$cur") )
+                elif [[ "$cword" -eq 3 && "${COMP_WORDS[2]}" == "--remove" ]]; then
+                    COMPREPLY=( $(compgen -W "${_faliases[*]}" -- "$cur") )
                 fi
                 ;;
             --last|--add|--edit|--import|--help|--export-ssh-config)

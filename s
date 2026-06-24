@@ -20,6 +20,7 @@ SYNC_REMOTE_PATH="validation/machines.txt"
 [[ -f "$CONFIG_DIR/config" ]] && source "$CONFIG_DIR/config"
 # Derived — always sits next to machines.txt on the remote
 PATHS_SYNC_REMOTE_PATH="${SYNC_REMOTE_PATH%/*}/machine-paths.txt"
+FAVS_SYNC_REMOTE_PATH="${SYNC_REMOTE_PATH%/*}/favorites.txt"
 
 # Colors
 if [[ -t 1 && -z "${NO_COLOR-}" ]]; then
@@ -192,10 +193,13 @@ _sync_push() {
     local rdir; rdir=$(_sync_remote_dir)
     if scp -q -o BatchMode=yes -o ConnectTimeout=5 \
             "$MAPFILE" "${SYNC_HOST}:${SYNC_REMOTE_PATH}" 2>/dev/null; then
-        # Also push machine-paths.txt alongside machines.txt
+        # Also push machine-paths.txt and favorites.txt alongside machines.txt
         [[ -f "$PATHS_FILE" ]] && \
             scp -q -o BatchMode=yes -o ConnectTimeout=5 \
                 "$PATHS_FILE" "${SYNC_HOST}:${PATHS_SYNC_REMOTE_PATH}" 2>/dev/null
+        [[ -f "$FAVS_FILE" ]] && \
+            scp -q -o BatchMode=yes -o ConnectTimeout=5 \
+                "$FAVS_FILE" "${SYNC_HOST}:${FAVS_SYNC_REMOTE_PATH}" 2>/dev/null
         # Bump version file so all clients know to pull within 30s
         local ver; ver=$(date +%s)
         ssh -q -o BatchMode=yes -o ConnectTimeout=5 \
@@ -205,6 +209,26 @@ _sync_push() {
         touch "$CONFIG_DIR/.last_sync" 2>/dev/null
     fi
     # Push failure is silent — no access or server down; change is saved locally
+}
+
+# Expand a single-word alias to its full command (returns key unchanged if no match)
+_expand_fav() {
+    local key="$1"
+    [[ "$key" == *' '* || ! -f "$FAVS_FILE" ]] && { printf '%s' "$key"; return; }
+    local result
+    result=$(awk -v k="$key" 'NF >= 3 && $1 == k && $2 == "=" {
+        $1=""; $2=""; gsub(/^ +/, ""); print; exit
+    }' "$FAVS_FILE" 2>/dev/null)
+    printf '%s' "${result:-$key}"
+}
+
+# Push favorites.txt only (called after --fav adds/removes)
+_sync_push_favs() {
+    [[ -z "$SYNC_HOST" || ! -f "$FAVS_FILE" ]] && return 0
+    local rdir; rdir=$(_sync_remote_dir)
+    scp -q -o BatchMode=yes -o ConnectTimeout=5 \
+        "$FAVS_FILE" "${SYNC_HOST}:${FAVS_SYNC_REMOTE_PATH}" 2>/dev/null && \
+        printf "  ${GREEN}synced${RESET} favorites → %s\n" "$SYNC_HOST"
 }
 
 # Push machine-paths.txt only (called after --paths edit)
@@ -244,6 +268,8 @@ _sync_bg() {
                         "${SYNC_HOST}:${SYNC_REMOTE_PATH}" "$MAPFILE" 2>/dev/null; then
                     scp -q -o BatchMode=yes -o ConnectTimeout=5 \
                         "${SYNC_HOST}:${PATHS_SYNC_REMOTE_PATH}" "$PATHS_FILE" 2>/dev/null
+                    scp -q -o BatchMode=yes -o ConnectTimeout=5 \
+                        "${SYNC_HOST}:${FAVS_SYNC_REMOTE_PATH}" "$FAVS_FILE" 2>/dev/null
                     cp "$tmp_ver" "$local_ver" 2>/dev/null
                 fi
             fi
@@ -253,6 +279,8 @@ _sync_bg() {
                 "${SYNC_HOST}:${SYNC_REMOTE_PATH}" "$MAPFILE" 2>/dev/null
             scp -q -o BatchMode=yes -o ConnectTimeout=5 \
                 "${SYNC_HOST}:${PATHS_SYNC_REMOTE_PATH}" "$PATHS_FILE" 2>/dev/null
+            scp -q -o BatchMode=yes -o ConnectTimeout=5 \
+                "${SYNC_HOST}:${FAVS_SYNC_REMOTE_PATH}" "$FAVS_FILE" 2>/dev/null
         fi
         rm -f "$tmp_ver"
     ) &
@@ -916,6 +944,7 @@ case "$1" in
             printf "Usage: s --run <nick|@group|--all> \"cmd\"\n"; exit 1; }
         _require_mapfile
         spec="$2"; shift 2; cmd="$*"
+        cmd=$(_expand_fav "$cmd")
 
         run_nicks=(); run_targets=()
         while IFS=' ' read -r nick target; do
@@ -1092,6 +1121,9 @@ case "$1" in
             scp -q -o BatchMode=yes -o ConnectTimeout=10 \
                 "${SYNC_HOST}:${PATHS_SYNC_REMOTE_PATH}" "$PATHS_FILE" 2>/dev/null \
                 && printf "  ${GREEN}pulled${RESET}   %s:%s\n" "$SYNC_HOST" "$PATHS_SYNC_REMOTE_PATH"
+            scp -q -o BatchMode=yes -o ConnectTimeout=10 \
+                "${SYNC_HOST}:${FAVS_SYNC_REMOTE_PATH}" "$FAVS_FILE" 2>/dev/null \
+                && printf "  ${GREEN}pulled${RESET}   %s:%s\n" "$SYNC_HOST" "$FAVS_SYNC_REMOTE_PATH"
             # Grab the remote version file so bg-check knows we're current
             scp -q -o BatchMode=yes -o ConnectTimeout=5 \
                 "${SYNC_HOST}:${_sync_rdir}/.machines_version" \
@@ -1107,6 +1139,11 @@ case "$1" in
                         "$PATHS_FILE" "${SYNC_HOST}:${PATHS_SYNC_REMOTE_PATH}" 2>/dev/null \
                     && printf "  ${GREEN}pushed${RESET}   %s → %s:%s\n" \
                         "$PATHS_FILE" "$SYNC_HOST" "$PATHS_SYNC_REMOTE_PATH"
+                [[ -f "$FAVS_FILE" ]] && \
+                    scp -q -o BatchMode=yes -o ConnectTimeout=10 \
+                        "$FAVS_FILE" "${SYNC_HOST}:${FAVS_SYNC_REMOTE_PATH}" 2>/dev/null \
+                    && printf "  ${GREEN}pushed${RESET}   %s → %s:%s\n" \
+                        "$FAVS_FILE" "$SYNC_HOST" "$FAVS_SYNC_REMOTE_PATH"
                 # Bump version file so everyone picks it up
                 _sync_ver=$(date +%s)
                 ssh -q -o BatchMode=yes -o ConnectTimeout=5 \
@@ -1305,38 +1342,60 @@ case "$1" in
         touch "$FAVS_FILE" 2>/dev/null
         case "${2-}" in
             --list|-l)
-                if ! grep -qv '^#\|^[[:space:]]*$' "$FAVS_FILE" 2>/dev/null; then
-                    printf "No favorites saved. Add one with: s --fav \"command\"\n"
+                if ! awk 'NF >= 3 && $1 !~ /^#/ && $2 == "="' "$FAVS_FILE" 2>/dev/null | grep -q .; then
+                    printf "No favorites saved.\n"
+                    printf "Add one: s --fav <alias> = <command>\n"
+                    printf "Example: s --fav docker_restart_mule = docker restart mule\n"
                 else
-                    printf "${BOLD}Saved favorites:${RESET}\n"
-                    grep -v '^#\|^[[:space:]]*$' "$FAVS_FILE" | nl -ba
+                    printf "${BOLD}  %-28s %s${RESET}\n" "ALIAS" "COMMAND"
+                    printf "  %s\n" "$(printf '─%.0s' {1..60})"
+                    awk 'NF >= 3 && $1 !~ /^#/ && $2 == "=" {
+                        a=$1; $1=""; $2=""; gsub(/^ +/, "")
+                        printf "  %-28s %s\n", a, $0
+                    }' "$FAVS_FILE"
                 fi
                 ;;
             --edit|-e)
                 "${EDITOR:-nano}" "$FAVS_FILE"
                 ;;
             --remove)
-                [[ -z "${3-}" ]] && { printf "Usage: s --fav --remove \"command\"\n"; exit 1; }
-                if grep -qxF "$3" "$FAVS_FILE" 2>/dev/null; then
-                    grep -vxF "$3" "$FAVS_FILE" > "${FAVS_FILE}.tmp" && mv "${FAVS_FILE}.tmp" "$FAVS_FILE"
+                [[ -z "${3-}" ]] && { printf "Usage: s --fav --remove <alias>\n"; exit 1; }
+                if grep -q "^${3}[[:space:]]*=" "$FAVS_FILE" 2>/dev/null; then
+                    grep -v "^${3}[[:space:]]*=" "$FAVS_FILE" > "${FAVS_FILE}.tmp" \
+                        && mv "${FAVS_FILE}.tmp" "$FAVS_FILE"
                     printf "Removed: %s\n" "$3"
+                    _sync_push_favs
                 else
-                    printf "Not found: %s\n" "$3"; exit 1
+                    printf "Alias not found: %s\n" "$3"; exit 1
                 fi
                 ;;
             "")
                 printf "Usage:\n"
-                printf "  s --fav \"docker restart mule\"   # save a favorite command\n"
+                printf "  s --fav <alias> = <command>     # save a favorite\n"
                 printf "  s --fav --list                  # list all favorites\n"
-                printf "  s --fav --remove \"command\"      # remove a favorite\n"
-                printf "  s --fav --edit                  # open favorites file in \$EDITOR\n"
+                printf "  s --fav --remove <alias>        # remove a favorite\n"
+                printf "  s --fav --edit                  # open in \$EDITOR\n"
+                printf "\nExample:\n"
+                printf "  s --fav docker_restart_mule = docker restart mule\n"
+                printf "  s --run fm85 docker_restart_mule\n"
                 ;;
             *)
-                if grep -qxF "$2" "$FAVS_FILE" 2>/dev/null; then
-                    printf "Already saved: %s\n" "$2"
+                # s --fav docker_restart_mule = docker restart mule
+                if [[ "${3-}" == "=" && -n "${4-}" ]]; then
+                    _fav_alias="$2"; shift 3; _fav_cmd="$*"
+                    if grep -q "^${_fav_alias}[[:space:]]*=" "$FAVS_FILE" 2>/dev/null; then
+                        grep -v "^${_fav_alias}[[:space:]]*=" "$FAVS_FILE" > "${FAVS_FILE}.tmp"
+                        printf '%s = %s\n' "$_fav_alias" "$_fav_cmd" >> "${FAVS_FILE}.tmp"
+                        mv "${FAVS_FILE}.tmp" "$FAVS_FILE"
+                        printf "${YELLOW}Updated:${RESET} %s = %s\n" "$_fav_alias" "$_fav_cmd"
+                    else
+                        printf '%s = %s\n' "$_fav_alias" "$_fav_cmd" >> "$FAVS_FILE"
+                        printf "${GREEN}Saved:${RESET} %s = %s\n" "$_fav_alias" "$_fav_cmd"
+                    fi
+                    _sync_push_favs
                 else
-                    printf '%s\n' "$2" >> "$FAVS_FILE"
-                    printf "${GREEN}Saved:${RESET} %s\n" "$2"
+                    printf "Usage: s --fav <alias> = <command>\n"
+                    printf "Example: s --fav docker_restart_mule = docker restart mule\n"
                 fi
                 ;;
         esac

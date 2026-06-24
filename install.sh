@@ -37,13 +37,14 @@ fi
 # Create favorites.txt (don't overwrite if it already exists)
 if [ ! -f "$CONFIG_DIR/favorites.txt" ]; then
     cat > "$CONFIG_DIR/favorites.txt" << 'EOF'
-# Favorite commands for s --run
-# One command per line. Tab-complete them with: s --run <nick> <TAB>
-# Add new ones with: s --fav "docker restart mule"
-docker ps
-docker restart mule
-systemctl status
-journalctl -f
+# Favorite run commands — alias = full command
+# Add with: s --fav docker_restart_mule = docker restart mule
+# Run with: s --run <nick> docker_restart_mule
+# Tab-complete aliases with: s --run <nick> <TAB>
+docker_ps = docker ps
+docker_restart_mule = docker restart mule
+systemctl_status = systemctl status
+journalctl_follow = journalctl -f
 EOF
     echo "  Installed: $CONFIG_DIR/favorites.txt  (edit to add your own)"
 else

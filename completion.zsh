@@ -148,23 +148,14 @@ _ssh_shorty() {
         (( CURRENT == 3 )) && _nick_or_group
         if [[ "$first" == "--run" ]] && (( CURRENT == 4 )); then
           local favs_file="$HOME/.config/ssh_shorty/favorites.txt"
-          local -a favs=()
-          [[ -f "$favs_file" ]] && favs=(${(f)"$(grep -v '^#\|^[[:space:]]*$' "$favs_file" 2>/dev/null)"})
-          # Strip any leading quote the user may have already typed
-          local raw="${PREFIX#['\"]}"
-          # Find favorites that start with the raw prefix
-          local -a matches=()
-          local fav
-          for fav in "${favs[@]}"; do
-            [[ "$fav" == "${raw}"* ]] && matches+=("$fav")
-          done
+          local -a fav_aliases=()
+          [[ -f "$favs_file" ]] && fav_aliases=(${(f)"$(awk 'NF>=3 && $2=="=" && $1!~/^#/{print $1}' "$favs_file" 2>/dev/null)"})
+          local -a matches=(${(M)fav_aliases:#${PREFIX}*})
           if (( ${#matches} > 0 )); then
-            # Pass bare strings — zsh auto-escapes spaces as docker\ restart\ mule
-            # (embedding " in the candidate causes ZLE to swallow the rest of the line)
-            compadd -U -S ' ' -- "${matches[@]}"
+            compadd -S ' ' -- "${matches[@]}"
           else
-            # No match: wrap typed text in quotes; -S '"' positions cursor BEFORE closing "
-            compadd -Q -U -P '"' -S '"' -- "${raw}${SUFFIX#['\"]}"
+            # No alias match — offer "" so user can type a one-off command
+            compadd -Q -U -P '"' -S '"' -- ""
           fi
         fi
         ;;
@@ -212,13 +203,15 @@ _ssh_shorty() {
         fi
         ;;
       --fav)
+        local _ffile="$HOME/.config/ssh_shorty/favorites.txt"
+        local -a _faliases=()
+        [[ -f "$_ffile" ]] && _faliases=(${(f)"$(awk 'NF>=3 && $2=="=" && $1!~/^#/{print $1}' "$_ffile" 2>/dev/null)"})
         if (( CURRENT == 3 )); then
-          local favs_file="$HOME/.config/ssh_shorty/favorites.txt"
-          local -a favs=()
-          [[ -f "$favs_file" ]] && favs=(${(f)"$(grep -v '^#\|^[[:space:]]*$' "$favs_file" 2>/dev/null)"})
-          local -a fav_cmds=('--list:list favorites' '--edit:open in $EDITOR' '--remove:remove a favorite')
-          _describe 'option' fav_cmds
-          (( ${#favs} > 0 )) && compadd -Q -S ' ' -- "${favs[@]}"
+          local -a fav_opts=('--list:list favorites' '--edit:open in $EDITOR' '--remove:remove a favorite')
+          _describe 'option' fav_opts
+          (( ${#_faliases} > 0 )) && compadd -S ' ' -- "${_faliases[@]}"
+        elif (( CURRENT == 4 )) && [[ "${words[3]}" == "--remove" ]]; then
+          compadd -S ' ' -- "${_faliases[@]}"
         fi
         ;;
       --last|--add|--edit|--import|--help|--export-ssh-config)
