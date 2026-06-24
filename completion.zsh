@@ -148,16 +148,22 @@ _ssh_shorty() {
         (( CURRENT == 3 )) && _nick_or_group
         if [[ "$first" == "--run" ]] && (( CURRENT == 4 )); then
           local favs_file="$HOME/.config/ssh_shorty/favorites.txt"
-          local -a favs=() matches=()
+          local -a favs=()
           [[ -f "$favs_file" ]] && favs=(${(f)"$(grep -v '^#\|^[[:space:]]*$' "$favs_file" 2>/dev/null)"})
-          matches=(${(M)favs:#${PREFIX}*})
+          # Strip any leading quote the user may have already typed
+          local raw="${PREFIX#['\"]}"
+          # Find favorites that start with the raw prefix
+          local -a matches=()
+          local fav
+          for fav in "${favs[@]}"; do
+            [[ "$fav" == "${raw}"* ]] && matches+=( "\"${fav}\"" )
+          done
           if (( ${#matches} > 0 )); then
-            compadd -Q -S ' ' -- "${matches[@]}"
+            # Insert quoted favorite, space after, cursor after closing "
+            compadd -Q -U -S ' ' -- "${matches[@]}"
           else
-            # No match: insert "" with cursor between the quotes
-            local _base="${LBUFFER%$PREFIX}"
-            LBUFFER="${_base}\"\""
-            CURSOR=$(( ${#LBUFFER} - 1 ))
+            # No match: wrap current input in quotes; -S '"' puts cursor BEFORE the closing "
+            compadd -Q -U -P '"' -S '"' -- "${raw}${SUFFIX#['\"]}"
           fi
         fi
         ;;

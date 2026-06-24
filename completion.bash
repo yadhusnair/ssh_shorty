@@ -144,14 +144,15 @@ _ssh_shorty_complete() {
                     local favs_file="$HOME/.config/ssh_shorty/favorites.txt"
                     local -a favs=() matches=()
                     [[ -f "$favs_file" ]] && mapfile -t favs < <(grep -v '^#\|^[[:space:]]*$' "$favs_file" 2>/dev/null)
+                    local raw_cur="${cur#\"}"  # strip leading " the user may have typed
                     for fav in "${favs[@]}"; do
-                        local qfav; printf -v qfav '%q' "$fav"
-                        [[ "$qfav" == "$cur"* ]] && matches+=("$qfav")
+                        [[ "$fav" == "${raw_cur}"* ]] && matches+=( "\"${fav}\"" )
                     done
                     if [[ ${#matches[@]} -gt 0 ]]; then
                         COMPREPLY=( "${matches[@]}" )
                     else
-                        COMPREPLY=( '""' )
+                        # Wrap typed text in quotes (cursor ends up after closing " — press ← once)
+                        COMPREPLY=( "\"${raw_cur}\"" )
                     fi
                 fi
                 ;;
