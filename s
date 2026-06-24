@@ -915,7 +915,7 @@ case "$1" in
         [[ -z "$2" || -z "$3" ]] && {
             printf "Usage: s --run <nick|@group|--all> \"cmd\"\n"; exit 1; }
         _require_mapfile
-        spec="$2"; cmd="$3"
+        spec="$2"; shift 2; cmd="$*"
 
         run_nicks=(); run_targets=()
         while IFS=' ' read -r nick target; do
