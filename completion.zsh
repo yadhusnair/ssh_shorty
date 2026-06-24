@@ -4,8 +4,9 @@
 zmodload zsh/stat 2>/dev/null
 
 _ssh_shorty() {
-  local -a machines groups subcommands
+  local -a machines groups tags_raw all_aliases subcommands
   local mapfile="$HOME/.config/ssh_shorty/machines.txt"
+  local paths_file="$HOME/.config/ssh_shorty/machine-paths.txt"
 
   machines=(${(f)"$(awk 'NF >= 2 && $1 !~ /^#/ {print $1}' "$mapfile" 2>/dev/null)"})
   groups=(${(f)"$(awk 'NF >= 2 && $1 !~ /^#/ {
@@ -16,8 +17,12 @@ _ssh_shorty() {
   tags_raw=(${(f)"$(awk 'NF >= 2 && $1 !~ /^#/ {
     for(i=3;i<=NF;i++) if($i~/^#/) { gsub(/^#/,"",$i); print $i }
   }' "$mapfile" 2>/dev/null | sort -u)"})
+  [[ -f "$paths_file" ]] && \
+    all_aliases=(${(f)"$(awk 'NF >= 3 && $1 !~ /^#/ { print $2 }' "$paths_file" | sort -u)"})
 
   subcommands=(
+    '-d:download via path alias'
+    '--download:download via path alias'
     '-u:upload file/dir to device'
     '--upload:upload file/dir to device'
     '--list:list all devices'
@@ -40,10 +45,21 @@ _ssh_shorty() {
     '--import:import from ~/.ssh/config'
   )
 
+  # Return alias names defined for a nick's tags
+  _aliases_for_nick() {
+    local nick="$1"
+    [[ ! -f "$paths_file" ]] && return
+    local -a tags
+    tags=(${(f)"$(awk -v n="$nick" 'NF >= 2 && $1 == n {
+      for(i=3;i<=NF;i++) if($i~/^#/) print substr($i,2)
+    }' "$mapfile" 2>/dev/null)"})
+    for tag in "${tags[@]}"; do
+      awk -v t="$tag" 'NF >= 3 && $1 !~ /^#/ && $1 == t { print $2 }' "$paths_file"
+    done | sort -u
+  }
+
   _remote_paths_for() {
-    local token="$1"
-    local nick="${token%%:*}"
-    local partial="${token#*:}"
+    local nick="$1" partial="$2"
     local target
     target=$(awk -v n="$nick" '$1 == n {print $2; exit}' "$mapfile" 2>/dev/null)
     [[ -z "$target" ]] && return
@@ -68,6 +84,22 @@ _ssh_shorty() {
     compadd -f -Q -- "${paths[@]/#/${nick}:}"
   }
 
+  # For nick:<TAB>: offer aliases first, fall back to remote path completion
+  _nick_colon_complete() {
+    local token="$1"
+    local nick="${token%%:*}"
+    local partial="${token#*:}"
+    if [[ "$partial" != /* && "$partial" != ~* ]]; then
+      local -a nick_aliases
+      nick_aliases=(${(f)"$(_aliases_for_nick "$nick")"})
+      if (( ${#nick_aliases} > 0 )); then
+        compadd -S '' -- "${nick_aliases[@]}"
+        return
+      fi
+    fi
+    _remote_paths_for "$nick" "$partial"
+  }
+
   _nick_or_group() {
     if [[ "$PREFIX" == @* ]]; then
       compadd -S ' ' -- "${groups[@]}" '--all'
@@ -79,9 +111,8 @@ _ssh_shorty() {
   local first="${words[2]}"
 
   if (( CURRENT == 2 )); then
-    # Completing the first argument
     if [[ "$PREFIX" == *:* ]]; then
-      _remote_paths_for "$PREFIX"
+      _nick_colon_complete "$PREFIX"
     elif [[ "$PREFIX" == @* ]]; then
       compadd -S '' -- "${groups[@]}"
     elif [[ "$PREFIX" == -* ]]; then
@@ -90,7 +121,6 @@ _ssh_shorty() {
       compadd -S '' -- "${machines[@]}"
     fi
   else
-    # Completing second argument and beyond
     case "$first" in
       --set|--remove|--ping|--poll)
         (( CURRENT == 3 )) && _describe 'machine' machines
@@ -101,12 +131,21 @@ _ssh_shorty() {
       --run|--keydeploy|--close)
         (( CURRENT == 3 )) && _nick_or_group
         ;;
+      -d|--download)
+        if (( CURRENT == 3 )); then
+          compadd -S ' ' -- "${all_aliases[@]}"
+        elif (( CURRENT == 4 )); then
+          _describe 'machine' machines
+        elif (( CURRENT == 5 )); then
+          _files
+        fi
+        ;;
       -u|--upload)
         if (( CURRENT == 3 )); then
           _files
         elif (( CURRENT == 4 )); then
           if [[ "$PREFIX" == *:* ]]; then
-            _remote_paths_for "$PREFIX"
+            _nick_colon_complete "$PREFIX"
           else
             compadd -S '' -- "${machines[@]}"
           fi
@@ -120,13 +159,11 @@ _ssh_shorty() {
         fi
         ;;
       --last|--add|--edit|--import|--help|--export-ssh-config)
-        ;; # no further completion for these
+        ;;
       *)
-        # First arg is a nickname (or local path for rsync push) — not a flag
         if [[ "$PREFIX" == *:* ]]; then
-          _remote_paths_for "$PREFIX"
+          _nick_colon_complete "$PREFIX"
         else
-          # Multi-device mode: keep offering nicknames at any depth
           compadd -S '' -- "${machines[@]}"
         fi
         ;;

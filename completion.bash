@@ -14,8 +14,9 @@ _ssh_shorty_complete() {
         [[ "${COMP_WORDS[i]}" == ":" ]] && (( cword -= 2 ))
     done
 
-    local subcommands="--list --add --set --remove --tag --sync --ping --poll --edit --help --status --watch --run --close --export-ssh-config --keydeploy --last --import -u --upload"
+    local subcommands="--list --add --set --remove --tag --sync --ping --poll --edit --help --status --watch --run --close --export-ssh-config --keydeploy --last --import -u --upload -d --download"
     local mapfile_path="$HOME/.config/ssh_shorty/machines.txt"
+    local paths_file="$HOME/.config/ssh_shorty/machine-paths.txt"
     local machines=()
 
     if [[ -f "$mapfile_path" ]]; then
@@ -32,6 +33,25 @@ _ssh_shorty_complete() {
         awk 'NF >= 2 && $1 !~ /^#/ {
             for (i=3; i<=NF; i++) if ($i ~ /^#/) { gsub(/^#/, "@", $i); print $i }
         }' "$mapfile_path" 2>/dev/null | sort -u
+    }
+
+    # All alias names defined in machine-paths.txt
+    _get_all_aliases() {
+        [[ ! -f "$paths_file" ]] && return
+        awk 'NF >= 3 && $1 !~ /^#/ { print $2 }' "$paths_file" | sort -u
+    }
+
+    # Alias names applicable to a specific nick (via its tags)
+    _get_aliases_for_nick() {
+        local nick="$1"
+        [[ ! -f "$paths_file" ]] && return
+        local -a tags=()
+        mapfile -t tags < <(awk -v n="$nick" 'NF >= 2 && $1 == n {
+            for (i=3; i<=NF; i++) if ($i ~ /^#/) print substr($i,2)
+        }' "$mapfile_path" 2>/dev/null)
+        for tag in "${tags[@]}"; do
+            awk -v t="$tag" 'NF >= 3 && $1 !~ /^#/ && $1 == t { print $2 }' "$paths_file"
+        done | sort -u
     }
 
     _complete_nick_or_group() {
@@ -73,16 +93,29 @@ _ssh_shorty_complete() {
             printf '%s\n' "${remote_paths[@]}" > "$cache_file"
         fi
 
-        # Bare paths — readline places them after the ':' word-break automatically
         COMPREPLY=( "${remote_paths[@]}" )
         compopt -o nospace
+    }
+
+    # For nick:<TAB>: offer aliases first (no / prefix); fall back to remote paths.
+    _complete_nick_colon() {
+        local nick="$1" partial="$2"
+        if [[ "$partial" != /* && "$partial" != ~* ]]; then
+            local -a aliases
+            mapfile -t aliases < <(_get_aliases_for_nick "$nick")
+            if [[ ${#aliases[@]} -gt 0 ]]; then
+                COMPREPLY=( $(compgen -W "${aliases[*]}" -- "$partial") )
+                [[ ${#COMPREPLY[@]} -gt 0 ]] && return
+            fi
+        fi
+        _complete_nick_path "$nick" "$partial"
     }
 
     local first="${COMP_WORDS[1]}"
 
     if [[ "$cword" -eq 1 ]]; then
         if [[ -n "$nick_for_path" ]]; then
-            _complete_nick_path "$nick_for_path" "$cur"
+            _complete_nick_colon "$nick_for_path" "$cur"
         elif [[ "$cur" == -* ]]; then
             COMPREPLY=( $(compgen -W "$subcommands" -- "$cur") )
         elif [[ "$cur" == @* ]]; then
@@ -108,13 +141,25 @@ _ssh_shorty_complete() {
             --run|--keydeploy|--close)
                 [[ "$cword" -eq 2 ]] && _complete_nick_or_group "$cur"
                 ;;
+            -d|--download)
+                if [[ "$cword" -eq 2 ]]; then
+                    local -a aliases
+                    mapfile -t aliases < <(_get_all_aliases)
+                    COMPREPLY=( $(compgen -W "${aliases[*]}" -- "$cur") )
+                elif [[ "$cword" -eq 3 ]]; then
+                    COMPREPLY=( $(compgen -W "${machines[*]}" -- "$cur") )
+                elif [[ "$cword" -eq 4 ]]; then
+                    COMPREPLY=( $(compgen -f -- "$cur") )
+                    compopt -o nospace
+                fi
+                ;;
             -u|--upload)
                 if [[ "$cword" -eq 2 ]]; then
                     COMPREPLY=( $(compgen -f -- "$cur") )
                     compopt -o nospace
                 elif [[ "$cword" -eq 3 ]]; then
                     if [[ -n "$nick_for_path" ]]; then
-                        _complete_nick_path "$nick_for_path" "$cur"
+                        _complete_nick_colon "$nick_for_path" "$cur"
                     else
                         COMPREPLY=( $(compgen -W "${machines[*]}" -- "$cur") )
                         compopt -o nospace
@@ -137,7 +182,7 @@ _ssh_shorty_complete() {
             *)
                 # First arg is a nick — rsync pull or multi-device
                 if [[ -n "$nick_for_path" ]]; then
-                    _complete_nick_path "$nick_for_path" "$cur"
+                    _complete_nick_colon "$nick_for_path" "$cur"
                 else
                     COMPREPLY=( $(compgen -W "${machines[*]}" -- "$cur") )
                     compopt -o nospace

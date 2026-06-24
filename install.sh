@@ -26,6 +26,14 @@ else
     echo "  Installed: $CONFIG_DIR/machines.txt"
 fi
 
+# Install machine-paths.txt (don't overwrite if it already exists)
+if [ -f "$CONFIG_DIR/machine-paths.txt" ]; then
+    echo "  Skipped:   $CONFIG_DIR/machine-paths.txt (already exists)"
+else
+    cp "$SCRIPT_DIR/machine-paths.txt" "$CONFIG_DIR/machine-paths.txt"
+    echo "  Installed: $CONFIG_DIR/machine-paths.txt  (edit to add path aliases)"
+fi
+
 # Create config file template (don't overwrite)
 if [ ! -f "$CONFIG_DIR/config" ]; then
     cat > "$CONFIG_DIR/config" << 'EOF'

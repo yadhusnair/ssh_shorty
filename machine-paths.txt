@@ -1,0 +1,17 @@
+# machine-paths.txt — named path aliases per tag
+#
+# Format:  <tag>  <alias_name>  <remote_path>
+#
+# Tags must match those in machines.txt (without the # prefix).
+# Aliases are used with:
+#   s -d <alias> <nick> [local_dest]   — download
+#   s -u <file>  <nick>:<alias>        — upload
+#
+# Example:
+# sherpa  config_dir   /opt/ati/config
+# sherpa  config       /opt/ati/config/config.toml
+# sherpa  logs         /opt/ati/logs
+#
+# fm      config_dir   /opt/fm/config
+# fm      config       /opt/fm/config/config.toml
+# fm      logs         /var/log/fm

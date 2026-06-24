@@ -1,6 +1,7 @@
 #!/bin/bash
 
 MAPFILE="$HOME/.config/ssh_shorty/machines.txt"
+PATHS_FILE="$HOME/.config/ssh_shorty/machine-paths.txt"
 CONFIG_DIR="$HOME/.config/ssh_shorty"
 HISTORY_DIR="$HOME/.local/share/ssh_shorty"
 HISTORY_FILE="$HISTORY_DIR/history"
@@ -153,7 +154,8 @@ usage() {
     printf "  s --close <nick|@group|--all>               close ControlMaster socket\n"
     printf "  s --add <nickname> <user@ip> [#tags]        add a device\n"
     printf "  s --set <nickname> <user@ip>                update a device's IP\n"
-    printf "  s -u <local-path> <nick>[:/remote/path]     upload file/dir to device\n"
+    printf "  s -d <alias> <nick> [local_dest]            download via path alias\n"
+    printf "  s -u <local-path> <nick>[:<alias|path>]    upload file/dir (alias resolved)\n"
     printf "  s --remove <nickname>                       remove a device\n"
     printf "  s --tag <nickname> <tag>                    add a tag to a device (# auto-added)\n"
     printf "  s --sync                                    pull/push fleet from SYNC_HOST\n"
@@ -245,6 +247,27 @@ _load_device_opts() {
             key=*)  DEVICE_SSH_OPTS+=(-i "${field#key=}") ;;
         esac
     done
+}
+
+# Returns the raw tags (without #) for a nick
+_nick_tags() {
+    awk -v n="$1" 'NF >= 2 && $1 == n {
+        for (i=3; i<=NF; i++) if ($i ~ /^#/) print substr($i, 2)
+    }' "$MAPFILE"
+}
+
+# Resolves a path alias to its remote path via machine-paths.txt.
+# Usage: _resolve_alias <nick> <alias>  → prints path, returns 1 if not found
+_resolve_alias() {
+    local nick="$1" alias="$2"
+    [[ ! -f "$PATHS_FILE" ]] && return 1
+    local tag path
+    while IFS= read -r tag; do
+        path=$(awk -v t="$tag" -v a="$alias" \
+            'NF >= 3 && $1 !~ /^#/ && $1 == t && $2 == a { print $3; exit }' "$PATHS_FILE")
+        [[ -n "$path" ]] && { printf '%s' "$path"; return 0; }
+    done < <(_nick_tags "$nick")
+    return 1
 }
 
 _resolve_targets() {
@@ -530,12 +553,38 @@ case "$1" in
         fi
         ;;
 
+    -d|--download)
+        [[ -z "$2" || -z "$3" ]] && {
+            printf "Usage: s -d <alias|/path> <nick> [local_dest]\n"; exit 1; }
+        ALIAS="$2"; NICK="$3"; LOCAL_DEST="${4:-.}"
+        TARGET=$(_lookup_target "$NICK")
+        [[ -z "$TARGET" ]] && { printf "Nickname not found: %s\n" "$NICK"; exit 1; }
+        if [[ "$ALIAS" == /* || "$ALIAS" == ~* ]]; then
+            REMOTE_PATH="$ALIAS"
+        else
+            REMOTE_PATH=$(_resolve_alias "$NICK" "$ALIAS") || {
+                printf "Alias '%s' not found for '%s' (check machine-paths.txt).\n" "$ALIAS" "$NICK"
+                exit 1
+            }
+        fi
+        _load_device_opts "$NICK"
+        ssh_cmd="ssh"
+        for o in "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}"; do ssh_cmd+=" $o"; done
+        _anim_enabled && _glitch_line \
+            "Downloading  ${NICK}:${REMOTE_PATH}  →  ${LOCAL_DEST}" "${BOLD}${GREEN}"
+        rsync -avP -e "$ssh_cmd" "$TARGET:$REMOTE_PATH" "$LOCAL_DEST"
+        ;;
+
     -u|--upload)
         [[ -z "$2" || -z "$3" ]] && {
-            printf "Usage: s -u <local-path> <nick>[:/remote/path]\n"; exit 1; }
+            printf "Usage: s -u <local-path> <nick>[:<alias|path>]\n"; exit 1; }
         LOCAL_PATH="$2"; DEST="$3"
         if [[ "$DEST" == *:* ]]; then
             NICK="${DEST%%:*}"; REMOTE_PATH="${DEST#*:}"
+            # Resolve alias if remote path doesn't look like an absolute path
+            if [[ "$REMOTE_PATH" != /* && "$REMOTE_PATH" != ~* ]]; then
+                RESOLVED=$(_resolve_alias "$NICK" "$REMOTE_PATH") && REMOTE_PATH="$RESOLVED"
+            fi
         else
             NICK="$DEST"; REMOTE_PATH="~/"
         fi
