@@ -112,6 +112,25 @@ EOF
     fi
 fi
 
+# ── Bash menu-complete (Tab cycling) ──────────────────────────────────────────
+# Without this, bash lists all completions but never cycles. With it, Tab cycles
+# through candidates one by one (like zsh). Written to ~/.inputrc which readline
+# reads for all programs — safe to add if not already present.
+INPUTRC="$HOME/.inputrc"
+if ! grep -q 'menu-complete' "$INPUTRC" 2>/dev/null; then
+    cat >> "$INPUTRC" << 'EOF'
+
+# Cycle through completions with Tab (added by ssh_shorty install)
+TAB: menu-complete
+"\e[Z": menu-complete-backward
+set show-all-if-ambiguous on
+set menu-complete-display-prefix on
+EOF
+    echo "  Updated:   ~/.inputrc (Tab cycling for bash)"
+else
+    echo "  Skipped:   ~/.inputrc (menu-complete already set)"
+fi
+
 # ── PATH ───────────────────────────────────────────────────────────────────────
 for RC in "$HOME/.bashrc" "$HOME/.zshrc"; do
     [ -f "$RC" ] || continue
