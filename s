@@ -322,6 +322,34 @@ _resolve_alias() {
     return 1
 }
 
+# Applies mDNS / ARP resolution to a target that may contain a .local hostname or have a
+# mac= field in machines.txt. Returns the resolved target (user@ip), or the original if
+# no resolution is possible. Safe to call even when _lookup_target already resolved it.
+_apply_mac_resolution() {
+    local nick="$1" target="$2"
+    local user="" host="${target#*@}"
+    [[ "$target" == *@* ]] && user="${target%%@*}@"
+
+    # .local mDNS
+    if [[ "$host" == *.local ]] && command -v getent &>/dev/null; then
+        local ip; ip=$(getent hosts "$host" | awk '{print $1}' | head -n1)
+        [[ -n "$ip" ]] && { printf '%s%s\n' "$user" "$ip"; return; }
+    fi
+
+    # mac= ARP lookup
+    local line mac=""
+    line=$(awk -v n="$nick" '$1 == n {print; exit}' "$MAPFILE" 2>/dev/null)
+    for field in $line; do
+        [[ "$field" == mac=* ]] && mac="${field#mac=}"
+    done
+    if [[ -n "$mac" ]] && command -v arp &>/dev/null; then
+        local ip; ip=$(arp -n | awk -v m="${mac,,}" 'tolower($0) ~ m {print $1; exit}')
+        [[ -n "$ip" ]] && { printf '%s%s\n' "$user" "$ip"; return; }
+    fi
+
+    printf '%s\n' "$target"
+}
+
 # Resolves a single nick (with prefix matching) and sets RESOLVED_NICK / RESOLVED_TARGET.
 # Returns 1 (with error message) if the nick is not found.
 _get_single_target() {
