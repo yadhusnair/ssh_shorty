@@ -1,4 +1,5 @@
 #!/bin/bash
+SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 
 MAPFILE="$HOME/.config/ssh_shorty/machines.txt"
 PATHS_FILE="$HOME/.config/ssh_shorty/machine-paths.txt"
@@ -275,12 +276,22 @@ _lookup_target() {
     done
     local user="" host="$t"
     if [[ "$t" == *@* ]]; then user="${t%%@*}@"; host="${t#*@}"; fi
-    if [[ "$host" == *.local ]] && command -v getent &>/dev/null; then
-        local ip; ip=$(getent hosts "$host" | awk '{print $1}' | head -n1)
+    if [[ "$host" == *.local ]]; then
+        local ip=""
+        if command -v getent &>/dev/null; then
+            ip=$(getent hosts "$host" | awk '{print $1}' | head -n1)
+        elif command -v dscacheutil &>/dev/null; then
+            ip=$(dscacheutil -q host -a name "$host" 2>/dev/null | awk '/ip_address:/{print $2}' | head -n1)
+        fi
         [[ -n "$ip" ]] && { printf '%s%s\n' "$user" "$ip"; return 0; }
     fi
     if [[ -n "$mac" ]] && command -v arp &>/dev/null; then
-        local ip; ip=$(arp -n | awk -v m="${mac,,}" 'tolower($0) ~ m {print $1; exit}')
+        local ip
+        if [[ "$(uname)" == Darwin ]]; then
+            ip=$(arp -a 2>/dev/null | awk -v m="${mac,,}" 'tolower($0) ~ m {gsub(/[()]/,"",$2); print $2; exit}')
+        else
+            ip=$(arp -n 2>/dev/null | awk -v m="${mac,,}" 'tolower($0) ~ m {print $1; exit}')
+        fi
         [[ -n "$ip" ]] && { printf '%s%s\n' "$user" "$ip"; return 0; }
     fi
     printf '%s\n' "$t"
@@ -331,8 +342,13 @@ _apply_mac_resolution() {
     [[ "$target" == *@* ]] && user="${target%%@*}@"
 
     # .local mDNS
-    if [[ "$host" == *.local ]] && command -v getent &>/dev/null; then
-        local ip; ip=$(getent hosts "$host" | awk '{print $1}' | head -n1)
+    if [[ "$host" == *.local ]]; then
+        local ip=""
+        if command -v getent &>/dev/null; then
+            ip=$(getent hosts "$host" | awk '{print $1}' | head -n1)
+        elif command -v dscacheutil &>/dev/null; then
+            ip=$(dscacheutil -q host -a name "$host" 2>/dev/null | awk '/ip_address:/{print $2}' | head -n1)
+        fi
         [[ -n "$ip" ]] && { printf '%s%s\n' "$user" "$ip"; return; }
     fi
 
@@ -343,7 +359,12 @@ _apply_mac_resolution() {
         [[ "$field" == mac=* ]] && mac="${field#mac=}"
     done
     if [[ -n "$mac" ]] && command -v arp &>/dev/null; then
-        local ip; ip=$(arp -n | awk -v m="${mac,,}" 'tolower($0) ~ m {print $1; exit}')
+        local ip
+        if [[ "$(uname)" == Darwin ]]; then
+            ip=$(arp -a 2>/dev/null | awk -v m="${mac,,}" 'tolower($0) ~ m {gsub(/[()]/,"",$2); print $2; exit}')
+        else
+            ip=$(arp -n 2>/dev/null | awk -v m="${mac,,}" 'tolower($0) ~ m {print $1; exit}')
+        fi
         [[ -n "$ip" ]] && { printf '%s%s\n' "$user" "$ip"; return; }
     fi
 
@@ -497,10 +518,10 @@ if [[ -z "$1" ]]; then
             --prompt="  connect → " \
             --header="  Enter: connect | Ctrl-P: ping | Ctrl-K: keydeploy | Ctrl-S: sysinfo | Ctrl-E: edit" \
             --color='fg+:bold,gutter:-1' \
-            --bind "ctrl-p:execute($0 --ping {1})+clear-query" \
-            --bind "ctrl-k:execute($0 --keydeploy {1})+clear-query" \
-            --bind "ctrl-s:execute($0 --sysinfo {1})+clear-query" \
-            --bind "ctrl-e:execute($0 --edit)+clear-query" \
+            --bind "ctrl-p:execute($SELF --ping {1})+clear-query" \
+            --bind "ctrl-k:execute($SELF --keydeploy {1})+clear-query" \
+            --bind "ctrl-s:execute($SELF --sysinfo {1})+clear-query" \
+            --bind "ctrl-e:execute($SELF --edit)+clear-query" \
             2>/dev/null | awk '{print $1}')
         [[ -z "$PICK" ]] && exit 0
         set -- "$PICK"
@@ -551,70 +572,6 @@ case "$1" in
             fi
         done
         printf "\n  ${GREEN}%d online${RESET}  ${RED}%d offline${RESET}\n\n" "$online" "$offline"
-        ;;
-
-    --tunnel|-t)
-        [[ -z "$2" ]] && { printf "Usage: s --tunnel <nick> [local_port:]remote_port\n"; exit 1; }
-        _require_mapfile
-        NICK="$2"; TARGET=$(_lookup_target "$NICK")
-        [[ -z "$TARGET" ]] && { printf "Nickname not found: %s\n" "$NICK"; exit 1; }
-        _load_device_opts "$NICK"
-        mapping="$3"
-        [[ -z "$mapping" ]] && mapping="$DEVICE_FORWARD"
-        [[ -z "$mapping" ]] && { printf "No tunnel mapping provided or found in machines.txt for %s.\n" "$NICK"; exit 1; }
-        if [[ "$mapping" == -D* ]]; then
-            _anim_enabled && _glitch_line "SOCKS Proxy  →  ${NICK} (${mapping#-D })" "${BOLD}${YELLOW}"
-            ssh "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" -N -D "${mapping#-D }" "$TARGET"
-        else
-            local_port="${mapping%:*}"; remote_port="${mapping#*:}"
-            [[ "$local_port" == "$remote_port" ]] && remote_port="$local_port"
-            _anim_enabled && _glitch_line "Tunneling localhost:${local_port}  →  ${NICK}:${remote_port}" "${BOLD}${YELLOW}"
-            ssh "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" -N -L "${local_port}:localhost:${remote_port}" "$TARGET"
-        fi
-        ;;
-
-    --tail)
-        [[ -z "$2" || -z "$3" ]] && { printf "Usage: s --tail <nick> <alias|/path>\n"; exit 1; }
-        NICK="$2"; ALIAS="$3"; TARGET=$(_lookup_target "$NICK")
-        [[ -z "$TARGET" ]] && { printf "Nickname not found: %s\n" "$NICK"; exit 1; }
-        if [[ "$ALIAS" == /* || "$ALIAS" == ~* ]]; then
-            REMOTE_PATH="$ALIAS"
-        else
-            REMOTE_PATH=$(_resolve_alias "$NICK" "$ALIAS") || { printf "Alias '%s' not found for '%s'.\n" "$ALIAS" "$NICK"; exit 1; }
-        fi
-        _load_device_opts "$NICK"
-        _anim_enabled && _glitch_line "Tailing  ${NICK}:${REMOTE_PATH}" "${BOLD}${GREEN}"
-        ssh "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" -t "$TARGET" "if [ -d \"$REMOTE_PATH\" ]; then tail -n 100 -f \"$REMOTE_PATH\"/*; else tail -n 100 -f \"$REMOTE_PATH\"; fi"
-        ;;
-
-    --run-script)
-        [[ -z "$2" || -z "$3" ]] && { printf "Usage: s --run-script <nick|@group|--all> <local_script_path> [args]\n"; exit 1; }
-        _require_mapfile
-        spec="$2"; script_path="$3"; shift 3
-        [[ ! -f "$script_path" ]] && { printf "Script not found: %s\n" "$script_path"; exit 1; }
-        run_nicks=(); run_targets=()
-        while IFS=' ' read -r nick target; do run_nicks+=("$nick"); run_targets+=("$target"); done < <(_resolve_targets "$spec")
-        [[ ${#run_nicks[@]} -eq 0 ]] && { printf "No devices found for: %s\n" "$spec"; exit 1; }
-        if [[ ${#run_nicks[@]} -eq 1 ]]; then
-            _anim_enabled && _glitch_line "[ ${run_nicks[0]} ]  $script_path" "${CYAN}"
-            ssh "${SSH_CTRL_OPTS[@]}" "${run_targets[0]}" 'bash -s' -- "$@" < "$script_path"
-        else
-            _anim_enabled && _matrix_header "[ BROADCAST SCRIPT ]"
-            tmpdir=$(mktemp -d); trap 'rm -rf "$tmpdir"; _show_cursor' EXIT INT TERM
-            spinner_pid=""; _anim_enabled && spinner_pid=$(_spinner_start "Transmitting to ${#run_nicks[@]} device(s)...")
-            for i in "${!run_nicks[@]}"; do
-                safe="${run_nicks[$i]//\//_}"
-                ( ssh "${SSH_CTRL_OPTS[@]}" -o BatchMode=yes -o ConnectTimeout=5 "${run_targets[$i]}" 'bash -s' -- "$@" < "$script_path" 2>&1 ) > "$tmpdir/$safe.out" &
-            done
-            wait
-            [[ -n "$spinner_pid" ]] && _spinner_stop "$spinner_pid"
-            for i in "${!run_nicks[@]}"; do
-                safe="${run_nicks[$i]//\//_}"
-                printf "\n${CYAN}[%s]${RESET}\n" "${run_nicks[$i]}"
-                while IFS= read -r line; do printf "${DIM}  %s${RESET}\n" "$line"; done < "$tmpdir/$safe.out"
-            done
-            printf "\n"
-        fi
         ;;
 
     --list|-l)
