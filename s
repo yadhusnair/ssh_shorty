@@ -322,6 +322,31 @@ _resolve_alias() {
     return 1
 }
 
+# Resolves a single nick (with prefix matching) and sets RESOLVED_NICK / RESOLVED_TARGET.
+# Returns 1 (with error message) if the nick is not found.
+_get_single_target() {
+    local input="$1"
+    local nick target
+    # Exact match first
+    if _nick_exists "$input"; then
+        nick="$input"
+    else
+        # Prefix match
+        nick=$(awk -v p="$input" 'NF >= 2 && $1 !~ /^#/ && substr($1,1,length(p)) == p {print $1; exit}' "$MAPFILE")
+        if [[ -z "$nick" ]]; then
+            printf "Unknown device: %s\n" "$input" >&2
+            return 1
+        fi
+    fi
+    target=$(_lookup_target "$nick")
+    if [[ -z "$target" ]]; then
+        printf "Could not resolve target for: %s\n" "$nick" >&2
+        return 1
+    fi
+    RESOLVED_NICK="$nick"
+    RESOLVED_TARGET="$target"
+}
+
 _resolve_targets() {
     local spec="$1"
     if [[ "$spec" == "--all" ]]; then
