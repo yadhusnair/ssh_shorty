@@ -155,7 +155,7 @@ usage() {
     printf "  s --set <nickname> <user@ip>                update a device's IP\n"
     printf "  s -u <local-path> <nick>[:/remote/path]     upload file/dir to device\n"
     printf "  s --remove <nickname>                       remove a device\n"
-    printf "  s --tag <nickname> #tag                     add a tag to a device\n"
+    printf "  s --tag <nickname> <tag>                    add a tag to a device (# auto-added)\n"
     printf "  s --sync                                    pull/push fleet from SYNC_HOST\n"
     printf "  s --ping <nickname>                         check reachability\n"
     printf "  s --poll <nickname>                         wait until online then connect\n"

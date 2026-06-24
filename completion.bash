@@ -126,7 +126,9 @@ _ssh_shorty_complete() {
                     COMPREPLY=( $(compgen -W "${machines[*]}" -- "$cur") )
                 elif [[ "$cword" -eq 3 ]]; then
                     local -a tags_raw
-                    mapfile -t tags_raw < <(_get_tags_raw)
+                    # Strip leading '#' — the shell treats '#foo' as a comment;
+                    # the command auto-prepends '#' when it receives the plain name.
+                    mapfile -t tags_raw < <(_get_tags_raw | sed 's/^#//')
                     COMPREPLY=( $(compgen -W "${tags_raw[*]}" -- "$cur") )
                 fi
                 ;;

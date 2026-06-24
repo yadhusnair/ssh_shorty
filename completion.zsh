@@ -11,8 +11,10 @@ _ssh_shorty() {
   groups=(${(f)"$(awk 'NF >= 2 && $1 !~ /^#/ {
     for(i=3;i<=NF;i++) if($i~/^#/) { gsub(/^#/,"@",$i); print $i }
   }' "$mapfile" 2>/dev/null | sort -u)"})
+  # Strip leading '#' — shell treats '#foo' as a comment in completion context;
+  # --tag auto-prepends '#' when it receives the plain name.
   tags_raw=(${(f)"$(awk 'NF >= 2 && $1 !~ /^#/ {
-    for(i=3;i<=NF;i++) if($i~/^#/) print $i
+    for(i=3;i<=NF;i++) if($i~/^#/) { gsub(/^#/,"",$i); print $i }
   }' "$mapfile" 2>/dev/null | sort -u)"})
 
   subcommands=(
