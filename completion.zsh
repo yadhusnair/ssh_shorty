@@ -36,6 +36,7 @@ _ssh_shorty() {
     '--edit:open machines.txt in $EDITOR'
     '--paths:open machine-paths.txt and sync'
     '--help:show usage'
+    '--update:check for and apply updates'
     '--status:parallel online/offline status table'
     '--watch:live-refreshing fleet status'
     '--sysinfo:live resource dashboard'

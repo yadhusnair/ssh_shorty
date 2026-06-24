@@ -1,6 +1,9 @@
 #!/bin/bash
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 
+VERSION="20260625"
+REPO_RAW="https://raw.githubusercontent.com/yadhusnair/ssh_shorty/main"
+
 MAPFILE="$HOME/.config/ssh_shorty/machines.txt"
 PATHS_FILE="$HOME/.config/ssh_shorty/machine-paths.txt"
 CONFIG_DIR="$HOME/.config/ssh_shorty"
@@ -501,6 +504,31 @@ _tmux_sync_panes() {
     fi
 }
 
+# ── Update check ──────────────────────────────────────────────────────────────
+
+UPDATE_CACHE="$CONFIG_DIR/.update_check"
+
+_check_update() {
+    [[ ! -t 1 ]] && return                        # skip in non-interactive / pipe
+    command -v curl &>/dev/null || return          # need curl
+    local now ts cached_ver
+    now=$(date +%s)
+    # If cache is fresh (<24h), just show notification if one is pending
+    if [[ -f "$UPDATE_CACHE" ]]; then
+        read -r ts cached_ver < "$UPDATE_CACHE" 2>/dev/null
+        if (( now - ${ts:-0} < 86400 )); then
+            if [[ -n "$cached_ver" && "$cached_ver" > "$VERSION" ]]; then
+                printf "${YELLOW}  ↑ update available: %s → %s   run: s --update${RESET}\n\n" "$VERSION" "$cached_ver" >&2
+            fi
+            return
+        fi
+    fi
+    # Cache stale — fetch remote version in background, write result for next run
+    ( remote=$(curl -fsSL --max-time 4 "$REPO_RAW/VERSION" 2>/dev/null | tr -d '[:space:]')
+      [[ -n "$remote" ]] && printf '%s %s\n' "$(date +%s)" "$remote" > "$UPDATE_CACHE" ) &
+    disown
+}
+
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 # No args → fzf device picker (falls back to usage if fzf not installed)
@@ -532,6 +560,9 @@ fi
 
 # Background pull — keeps fleet in sync without blocking the prompt
 _sync_bg
+
+# Background update check — notifies on next run if newer version found
+_check_update
 
 case "$1" in
 
@@ -1266,6 +1297,36 @@ case "$1" in
         [[ ! -f "$PATHS_FILE" ]] && touch "$PATHS_FILE"
         ${EDITOR:-nano} "$PATHS_FILE"
         _sync_push_paths
+        ;;
+
+    --update)
+        command -v curl &>/dev/null || { printf "curl is required for updates.\n"; exit 1; }
+        printf "Checking for updates (current: %s)...\n" "$VERSION"
+        remote_ver=$(curl -fsSL --max-time 8 "$REPO_RAW/VERSION" 2>/dev/null | tr -d '[:space:]')
+        if [[ -z "$remote_ver" ]]; then
+            printf "Could not reach update server. Check your connection.\n"; exit 1
+        fi
+        if [[ "$remote_ver" == "$VERSION" || ! "$remote_ver" > "$VERSION" ]]; then
+            printf "Already up to date (v%s).\n" "$VERSION"
+            printf '%s %s\n' "$(date +%s)" "$remote_ver" > "$UPDATE_CACHE"
+            exit 0
+        fi
+        printf "\n  Current : %s\n  Latest  : ${GREEN}%s${RESET}\n\n" "$VERSION" "$remote_ver"
+        printf "Update %s? [Y/n] " "$SELF"
+        read -r _upd_resp
+        [[ "$_upd_resp" =~ ^[Nn] ]] && { printf "Aborted.\n"; exit 0; }
+        printf "Downloading v%s...\n" "$remote_ver"
+        _upd_tmp=$(mktemp)
+        if ! curl -fsSL --max-time 20 "$REPO_RAW/s" -o "$_upd_tmp"; then
+            printf "Download failed.\n"; rm -f "$_upd_tmp"; exit 1
+        fi
+        if ! head -1 "$_upd_tmp" | grep -q '^#!/bin/bash'; then
+            printf "Downloaded file looks invalid — aborted.\n"; rm -f "$_upd_tmp"; exit 1
+        fi
+        chmod +x "$_upd_tmp"
+        mv "$_upd_tmp" "$SELF"
+        printf '%s %s\n' "$(date +%s)" "$remote_ver" > "$UPDATE_CACHE"
+        printf "${GREEN}✓ Updated to v%s${RESET}\n" "$remote_ver"
         ;;
 
     --help|-h)
