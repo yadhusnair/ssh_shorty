@@ -30,6 +30,7 @@ exec zsh        # or: exec bash
 ```
 
 What the installer does:
+- **Prompts to install zsh** if not already present (recommended — richer completions, native Tab cycling). Offers to set it as your default shell via `chsh`. Supports `apt`, `dnf`, `pacman`, and `brew`.
 - Copies `s` to `~/.local/bin/s`
 - Copies `machines.txt` to `~/.config/ssh_shorty/machines.txt` (skips if already exists)
 - Copies `machine-paths.txt` to `~/.config/ssh_shorty/machine-paths.txt` (skips if already exists)
@@ -39,6 +40,8 @@ What the installer does:
 - Adds Tab cycling (`menu-complete`) to `~/.inputrc` so bash cycles instead of listing
 - Clears the zsh completion cache so it's active immediately
 - Safe to re-run at any time — never overwrites your device list or config
+
+**zsh vs bash** — both shells are fully supported, but zsh gives a noticeably better experience: smarter prefix matching in completions, native Tab cycling without `~/.inputrc` tweaks, and faster completion response. The installer sets everything up either way.
 
 ---
 
