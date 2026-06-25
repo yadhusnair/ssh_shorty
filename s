@@ -996,6 +996,8 @@ case "$1" in
         if [[ "$2" == *:* ]]; then
             # nick:path syntax — same as top-level rsync pull
             NICK="${2%%:*}"; REMOTE_PATH="${2#*:}"; LOCAL_DEST="${3:-.}"
+            TARGET=$(_lookup_target "$NICK")
+            [[ -z "$TARGET" ]] && { printf "Nickname not found: %s\n" "$NICK"; exit 1; }
         else
             [[ -z "$3" ]] && {
                 printf "Usage: s -d <nick:path> [local_dest]\n"
@@ -1421,10 +1423,12 @@ case "$1" in
             exit 0
         fi
         printf "\n  Current : %s\n  Latest  : ${GREEN}%s${RESET}\n\n" "$VERSION" "$remote_ver"
-        printf "Update %s? [Y/n] " "$SELF"
+        printf "Update? [Y/n] "
         read -r _upd_resp
         [[ "$_upd_resp" =~ ^[Nn] ]] && { printf "Aborted.\n"; exit 0; }
         printf "Downloading v%s...\n" "$remote_ver"
+
+        # Download s
         _upd_tmp=$(mktemp)
         if ! curl -fsSL --max-time 20 "$REPO_RAW/s" -o "$_upd_tmp"; then
             printf "Download failed.\n"; rm -f "$_upd_tmp"; exit 1
@@ -1434,8 +1438,29 @@ case "$1" in
         fi
         chmod +x "$_upd_tmp"
         mv "$_upd_tmp" "$SELF"
+        printf "  ${GREEN}✓${RESET} s\n"
+
+        # Download and install completion files
+        _ZSH_COMP="$HOME/.zsh/completions/_s"
+        _BASH_COMP_XDG="$HOME/.local/share/bash-completion/completions/s"
+        _BASH_COMP_CFG="$CONFIG_DIR/completion.bash"
+        _ctmp=$(mktemp)
+        if curl -fsSL --max-time 10 "$REPO_RAW/completion.zsh" -o "$_ctmp" 2>/dev/null; then
+            [[ -f "$_ZSH_COMP" ]] && cp "$_ctmp" "$_ZSH_COMP" && printf "  ${GREEN}✓${RESET} completion.zsh\n"
+        fi
+        if curl -fsSL --max-time 10 "$REPO_RAW/completion.bash" -o "$_ctmp" 2>/dev/null; then
+            [[ -f "$_BASH_COMP_XDG" ]] && cp "$_ctmp" "$_BASH_COMP_XDG"
+            [[ -f "$_BASH_COMP_CFG" ]] && cp "$_ctmp" "$_BASH_COMP_CFG"
+            { [[ -f "$_BASH_COMP_XDG" ]] || [[ -f "$_BASH_COMP_CFG" ]]; } && \
+                printf "  ${GREEN}✓${RESET} completion.bash\n"
+        fi
+        rm -f "$_ctmp"
+
+        # Clear zsh completion cache so new _s is picked up immediately
+        rm -f "$HOME/.zcompdump" "$HOME"/.zcompdump-* 2>/dev/null
+
         printf '%s %s\n' "$(date +%s)" "$remote_ver" > "$UPDATE_CACHE"
-        printf "${GREEN}✓ Updated to v%s${RESET}\n" "$remote_ver"
+        printf "\n${GREEN}✓ Updated to v%s${RESET} — open a new shell tab to activate new completions\n" "$remote_ver"
         ;;
 
     --help|-h)
