@@ -990,18 +990,25 @@ case "$1" in
         ;;
 
     -d|--download)
-        [[ -z "$2" || -z "$3" ]] && {
-            printf "Usage: s -d <alias|/path> <nick> [local_dest]\n"; exit 1; }
-        ALIAS="$2"; NICK="$3"; LOCAL_DEST="${4:-.}"
-        TARGET=$(_lookup_target "$NICK")
-        [[ -z "$TARGET" ]] && { printf "Nickname not found: %s\n" "$NICK"; exit 1; }
-        if [[ "$ALIAS" == /* || "$ALIAS" == ~* ]]; then
-            REMOTE_PATH="$ALIAS"
+        [[ -z "$2" ]] && {
+            printf "Usage: s -d <nick:path> [local_dest]\n"
+            printf "       s -d <alias|/path> <nick> [local_dest]\n"; exit 1; }
+        if [[ "$2" == *:* ]]; then
+            # nick:path syntax — same as top-level rsync pull
+            NICK="${2%%:*}"; REMOTE_PATH="${2#*:}"; LOCAL_DEST="${3:-.}"
         else
-            REMOTE_PATH=$(_resolve_alias "$NICK" "$ALIAS") || {
-                printf "Alias '%s' not found for '%s' (check machine-paths.txt).\n" "$ALIAS" "$NICK"
-                exit 1
-            }
+            [[ -z "$3" ]] && {
+                printf "Usage: s -d <nick:path> [local_dest]\n"
+                printf "       s -d <alias|/path> <nick> [local_dest]\n"; exit 1; }
+            ALIAS="$2"; NICK="$3"; LOCAL_DEST="${4:-.}"
+            if [[ "$ALIAS" == /* || "$ALIAS" == ~* ]]; then
+                REMOTE_PATH="$ALIAS"
+            else
+                REMOTE_PATH=$(_resolve_alias "$NICK" "$ALIAS") || {
+                    printf "Alias '%s' not found for '%s' (check machine-paths.txt).\n" "$ALIAS" "$NICK"
+                    exit 1
+                }
+            fi
         fi
         _load_device_opts "$NICK"
         ssh_cmd="ssh"

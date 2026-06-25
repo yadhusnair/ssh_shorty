@@ -174,11 +174,29 @@ _ssh_shorty_complete() {
                 ;;
             -d|--download)
                 if [[ "$cword" -eq 2 ]]; then
-                    local -a aliases
-                    mapfile -t aliases < <(_get_all_aliases)
-                    COMPREPLY=( $(compgen -W "${aliases[*]}" -- "$cur") )
+                    if [[ -n "$nick_for_path" ]]; then
+                        _complete_nick_colon "$nick_for_path" "$cur"
+                    elif [[ "$cur" == *:* ]]; then
+                        local _nick="${cur%%:*}" _partial="${cur##*:}"
+                        _complete_nick_path "$_nick" "$_partial"
+                    else
+                        local -a aliases
+                        mapfile -t aliases < <(_get_all_aliases)
+                        COMPREPLY=( $(compgen -W "${aliases[*]} ${machines[*]}" -- "$cur") )
+                        # nospace so nick: can be continued
+                        [[ ${#COMPREPLY[@]} -eq 1 && "${COMPREPLY[0]}" == "${machines[*]%% *}" ]] && \
+                            compopt -o nospace 2>/dev/null || true
+                        compopt -o nospace 2>/dev/null
+                    fi
                 elif [[ "$cword" -eq 3 ]]; then
-                    COMPREPLY=( $(compgen -W "${machines[*]}" -- "$cur") )
+                    local _prev2="${COMP_WORDS[2]}"
+                    if [[ "$_prev2" == *:* ]]; then
+                        # nick:path was arg2 — arg3 is local dest
+                        COMPREPLY=( $(compgen -f -- "$cur") )
+                        compopt -o nospace
+                    else
+                        COMPREPLY=( $(compgen -W "${machines[*]}" -- "$cur") )
+                    fi
                 elif [[ "$cword" -eq 4 ]]; then
                     COMPREPLY=( $(compgen -f -- "$cur") )
                     compopt -o nospace

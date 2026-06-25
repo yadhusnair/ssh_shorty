@@ -177,9 +177,20 @@ _ssh_shorty() {
         ;;
       -d|--download)
         if (( CURRENT == 3 )); then
-          compadd -S ' ' -- "${all_aliases[@]}"
+          if [[ "$PREFIX" == *:* ]]; then
+            _nick_colon_complete "$PREFIX"
+          else
+            # offer both machine names (with : suffix) and path aliases
+            compadd -S ':' -- "${machines[@]}"
+            compadd -S ' ' -- "${all_aliases[@]}"
+          fi
         elif (( CURRENT == 4 )); then
-          _describe 'machine' machines
+          local _prev="${words[3]}"
+          if [[ "$_prev" == *:* ]]; then
+            _files
+          else
+            _describe 'machine' machines
+          fi
         elif (( CURRENT == 5 )); then
           _files
         fi
