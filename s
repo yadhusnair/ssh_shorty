@@ -1459,6 +1459,14 @@ case "$1" in
         # Clear zsh completion cache so new _s is picked up immediately
         rm -f "$HOME/.zcompdump" "$HOME"/.zcompdump-* 2>/dev/null
 
+        # Sync favorites from team server if configured
+        if [[ -n "$SYNC_HOST" ]]; then
+            scp -q -o BatchMode=yes -o ConnectTimeout=5 \
+                "${SYNC_HOST}:${FAVS_SYNC_REMOTE_PATH}" "$FAVS_FILE" 2>/dev/null \
+                && printf "  ${GREEN}✓${RESET} favorites synced from %s\n" "$SYNC_HOST" \
+                || true
+        fi
+
         printf '%s %s\n' "$(date +%s)" "$remote_ver" > "$UPDATE_CACHE"
         printf "\n${GREEN}✓ Updated to v%s${RESET} — open a new shell tab to activate new completions\n" "$remote_ver"
         ;;
