@@ -9,6 +9,61 @@ ZSH_COMPLETIONS_DIR="$HOME/.zsh/completions"
 BASH_COMPLETIONS_DIR="$HOME/.local/share/bash-completion/completions"
 
 echo "Installing ssh_shorty..."
+echo ""
+
+# ── Shell selection ────────────────────────────────────────────────────────────
+USE_ZSH=false
+if command -v zsh &>/dev/null; then
+    USE_ZSH=true
+    echo "  zsh detected — enhanced completions will be set up."
+else
+    echo "  zsh not found. zsh offers richer tab-completion and a better interactive"
+    echo "  experience than bash (native cycling, smarter matching, and more)."
+    printf "  Install zsh now? [Y/n] "
+    read -r _zsh_resp
+    if [[ ! "$_zsh_resp" =~ ^[Nn] ]]; then
+        # Detect package manager and install
+        if command -v apt-get &>/dev/null; then
+            echo "  Installing zsh via apt..."
+            sudo apt-get install -y zsh
+        elif command -v dnf &>/dev/null; then
+            echo "  Installing zsh via dnf..."
+            sudo dnf install -y zsh
+        elif command -v pacman &>/dev/null; then
+            echo "  Installing zsh via pacman..."
+            sudo pacman -S --noconfirm zsh
+        elif command -v brew &>/dev/null; then
+            echo "  Installing zsh via brew..."
+            brew install zsh
+        else
+            echo "  Could not detect package manager. Install zsh manually, then re-run install.sh."
+            echo "  Continuing with bash..."
+        fi
+
+        if command -v zsh &>/dev/null; then
+            USE_ZSH=true
+            echo "  Installed: zsh $(zsh --version | awk '{print $2}')"
+
+            # Offer to set zsh as the default shell
+            _zsh_path="$(command -v zsh)"
+            if [[ "$SHELL" != "$_zsh_path" ]]; then
+                printf "  Set zsh as your default shell? [Y/n] "
+                read -r _chsh_resp
+                if [[ ! "$_chsh_resp" =~ ^[Nn] ]]; then
+                    # Ensure zsh is in /etc/shells
+                    if ! grep -qx "$_zsh_path" /etc/shells 2>/dev/null; then
+                        echo "$_zsh_path" | sudo tee -a /etc/shells > /dev/null
+                    fi
+                    chsh -s "$_zsh_path"
+                    echo "  Default shell set to zsh — takes effect on next login."
+                fi
+            fi
+        fi
+    else
+        echo "  Skipping zsh — continuing with bash."
+    fi
+fi
+echo ""
 
 mkdir -p "$BIN_DIR"
 mkdir -p "$CONFIG_DIR"
@@ -74,7 +129,7 @@ else
 fi
 
 # ── Zsh completion ─────────────────────────────────────────────────────────────
-if command -v zsh &>/dev/null; then
+if [[ "$USE_ZSH" == true ]]; then
     mkdir -p "$ZSH_COMPLETIONS_DIR"
     cp "$SCRIPT_DIR/completion.zsh" "$ZSH_COMPLETIONS_DIR/_s"
     echo "  Installed: $ZSH_COMPLETIONS_DIR/_s"
@@ -158,7 +213,14 @@ for RC in "$HOME/.bashrc" "$HOME/.zshrc"; do
 done
 
 echo ""
-echo "Done. Open a new shell tab, then try:"
+echo "Done."
+if [[ "$USE_ZSH" == true ]]; then
+    echo "  Run: exec zsh    (reload shell to activate completions)"
+else
+    echo "  Open a new shell tab to activate completions."
+fi
+echo ""
+echo "Then try:"
 echo "  s --list"
 echo "  s <nickname>"
 echo "  s <TAB>"
