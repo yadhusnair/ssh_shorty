@@ -10,10 +10,12 @@ s --poll fm85                        # wait until online, then connect
 s --status fm                        # live online/offline for all fm* devices
 s --sysinfo @fm                      # CPU / RAM / disk dashboard for all fm devices
 s --run @fm "ros2 node list"         # run command across entire group, in parallel
+s --run @fm docker_restart_mule      # run a saved favorite alias across a group
 s --run-script @fm deploy.sh         # push and execute a local script on every device
 s --tunnel fm85 8080                 # forward port 8080 through fm85
 s --tail fm85 /var/log/app.log       # live log tail over SSH
 s fm85:/home/ati/bags/ .             # rsync pull
+s -d fm85:/opt/ati/candump.log       # download a specific file
 ```
 
 ---
@@ -54,7 +56,7 @@ curl -fsSL https://raw.githubusercontent.com/yadhusnair/ssh_shorty/main/s -o ~/.
   ↑ update available: 20260625 → 20260701   run: s --update
 ```
 
-Run `s --update` to apply it — no git or repo clone needed.
+Run `s --update` to apply it — no git or repo clone needed. It updates the `s` script **and** both completion files (`completion.bash`, `completion.zsh`), then clears the zsh cache. Open a new shell tab after updating to activate the new completions.
 
 ---
 
@@ -183,9 +185,12 @@ s --poll fm8                 # prefix match works here too
 s fm85:/home/ati/bags/ .             # pull directory to current folder
 s fm85:/home/ati/bags/run1.bag .     # pull single file
 s ./config.yaml fm85:/home/ati/      # push file to device
+s -d fm85:/opt/ati/candump.log       # download direct path (nick:path)
 s -d config fm85                     # download using a named path alias
 s -u config.toml fm85:config         # upload using a named path alias
 ```
+
+`-d` accepts either `nick:path` (direct) or `alias nick` (named alias from `machine-paths.txt`). Tab-completing `s -d fm<TAB>` shows both machine names and aliases.
 
 ### Fleet status
 
@@ -215,7 +220,20 @@ Shows load average, RAM usage, and root disk usage for every reachable device in
 s --run fm85 "uptime"                # single device
 s --run @fm "ros2 node list"         # all #fm devices, in parallel
 s --run --all "df -h"                # every device
+s --run fm85 docker_restart_mule     # expand a saved favorite alias
+s --run @fm docker_restart_mule      # run favorite across all #fm devices
 ```
+
+**Favorite command aliases** — save long commands as short aliases, shared across the team:
+
+```bash
+s --fav docker_restart_mule = docker restart mule   # save alias
+s --fav --list                                       # show all favorites
+s --fav --remove docker_restart_mule                 # delete alias
+s --fav --edit                                       # open favorites.txt in $EDITOR
+```
+
+Favorites are stored in `~/.config/ssh_shorty/favorites.txt` and synced to the team via `SYNC_HOST` automatically whenever you add or remove one. Tab-complete aliases with `s --run <nick> <TAB>`.
 
 ### Broadcast a local script
 
@@ -301,18 +319,22 @@ s --last 25                  # last 25
 Works in both bash and zsh after install. In bash, the installer sets up `~/.inputrc` so Tab **cycles** through candidates one by one (same as zsh) instead of dumping a list.
 
 ```
-s <TAB>                 → all nicknames
-s fm<TAB>               → fm85, fm11, fm12, fm14 ... (cycles)
-s fm85 <TAB>            → more nicknames (multi-device mode)
-s fm85:<TAB>            → remote paths on fm85
-s fm85:/home/<TAB>      → drill into remote directory
-s --run <TAB>           → nicknames + @groups
-s --run @<TAB>          → @fm, @sherpa, @lifter ...
-s --status <TAB>        → @groups
-s --set <TAB>           → nicknames
-s --poll <TAB>          → nicknames
-s --tail <TAB>          → nicknames
-s --tunnel <TAB>        → nicknames
+s <TAB>                        → all nicknames
+s fm<TAB>                      → fm85, fm11, fm12, fm14 ... (cycles)
+s fm85 <TAB>                   → more nicknames (multi-device mode)
+s fm85:<TAB>                   → remote paths on fm85
+s fm85:/home/<TAB>             → drill into remote directory
+s --run <TAB>                  → nicknames + @groups
+s --run @<TAB>                 → @fm, @sherpa, @lifter ...
+s --run fm85 <TAB>             → saved favorite aliases (docker_restart_mule ...)
+s -d <TAB>                     → machine names + path aliases
+s -d fm85:<TAB>                → remote paths on fm85
+s --fav --remove <TAB>         → saved favorite aliases
+s --status <TAB>               → @groups
+s --set <TAB>                  → nicknames
+s --poll <TAB>                 → nicknames
+s --tail <TAB>                 → nicknames
+s --tunnel <TAB>               → nicknames
 ```
 
 Remote path completions are cached for 30 seconds. Requires key-based auth on the remote device — use `s --keydeploy` to set that up.
