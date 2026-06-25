@@ -957,7 +957,11 @@ case "$1" in
         if [[ ${#run_nicks[@]} -eq 1 ]]; then
             _anim_enabled && _glitch_line \
                 "[ ${run_nicks[0]} ]  $cmd" "${CYAN}"
-            ssh "${SSH_CTRL_OPTS[@]}" "${run_targets[0]}" "$cmd"
+            # Allocate a PTY when running interactively so commands like
+            # watch/top/htop get a proper terminal instead of TERM=unknown.
+            _run_tty_flag=()
+            [[ -t 1 ]] && _run_tty_flag=(-t)
+            ssh "${_run_tty_flag[@]}" "${SSH_CTRL_OPTS[@]}" "${run_targets[0]}" "$cmd"
         else
             _anim_enabled && _matrix_header "[ BROADCAST ]"
 
