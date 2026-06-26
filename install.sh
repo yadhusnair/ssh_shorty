@@ -8,6 +8,42 @@ CONFIG_DIR="$HOME/.config/ssh_shorty"
 ZSH_COMPLETIONS_DIR="$HOME/.zsh/completions"
 BASH_COMPLETIONS_DIR="$HOME/.local/share/bash-completion/completions"
 
+# --update mode: called by 's --update' after downloading a fresh repo tarball.
+# Only updates the script + completions — never touches user data files.
+UPDATE_MODE=false
+[[ "${1:-}" == "--update" ]] && UPDATE_MODE=true
+
+if [[ "$UPDATE_MODE" == true ]]; then
+    echo "Applying update..."
+    echo ""
+
+    # Update the s script
+    cp "$SCRIPT_DIR/s" "$BIN_DIR/s"
+    chmod +x "$BIN_DIR/s"
+    echo "  ✓ s"
+
+    # Update completion files (only where already installed)
+    if [[ -f "$ZSH_COMPLETIONS_DIR/_s" ]]; then
+        cp "$SCRIPT_DIR/completion.zsh" "$ZSH_COMPLETIONS_DIR/_s"
+        echo "  ✓ completion.zsh"
+        rm -f "$HOME/.zcompdump" "$HOME"/.zcompdump-* 2>/dev/null
+    fi
+    local_xdg="$BASH_COMPLETIONS_DIR/s"
+    local_cfg="$CONFIG_DIR/completion.bash"
+    if [[ -f "$local_xdg" ]]; then
+        cp "$SCRIPT_DIR/completion.bash" "$local_xdg"
+        echo "  ✓ completion.bash (xdg)"
+    fi
+    if [[ -f "$local_cfg" ]]; then
+        cp "$SCRIPT_DIR/completion.bash" "$local_cfg"
+        echo "  ✓ completion.bash (cfg)"
+    fi
+
+    echo ""
+    echo "Done. Open a new shell tab to activate new completions."
+    exit 0
+fi
+
 echo "Installing ssh_shorty..."
 echo ""
 

@@ -1432,38 +1432,28 @@ case "$1" in
         printf "Update? [Y/n] "
         read -r _upd_resp
         [[ "$_upd_resp" =~ ^[Nn] ]] && { printf "Aborted.\n"; exit 0; }
+
+        # Download the full repo tarball and run install.sh --update
+        # This ensures install.sh itself and all files stay in sync.
+        # install.sh --update only touches the script + completions — never user data.
         printf "Downloading v%s...\n" "$remote_ver"
+        _upd_dir=$(mktemp -d)
+        trap 'rm -rf "$_upd_dir"' EXIT
 
-        # Download s
-        _upd_tmp=$(mktemp)
-        if ! curl -fsSL --max-time 20 "$REPO_RAW/s" -o "$_upd_tmp"; then
-            printf "Download failed.\n"; rm -f "$_upd_tmp"; exit 1
+        _tarball="$_upd_dir/repo.tar.gz"
+        _repo_url="https://github.com/yadhusnair/ssh_shorty/archive/refs/heads/main.tar.gz"
+        if ! curl -fsSL --max-time 60 "$_repo_url" -o "$_tarball"; then
+            printf "Download failed.\n"; exit 1
         fi
-        if ! head -1 "$_upd_tmp" | grep -q '^#!/bin/bash'; then
-            printf "Downloaded file looks invalid — aborted.\n"; rm -f "$_upd_tmp"; exit 1
+        if ! tar -xzf "$_tarball" -C "$_upd_dir" 2>/dev/null; then
+            printf "Extract failed.\n"; exit 1
         fi
-        chmod +x "$_upd_tmp"
-        mv "$_upd_tmp" "$SELF"
-        printf "  ${GREEN}✓${RESET} s\n"
+        _repo_dir=$(find "$_upd_dir" -maxdepth 1 -type d -name 'ssh_shorty-*' | head -1)
+        if [[ -z "$_repo_dir" || ! -f "$_repo_dir/install.sh" ]]; then
+            printf "Unexpected archive layout — aborted.\n"; exit 1
+        fi
 
-        # Download and install completion files
-        _ZSH_COMP="$HOME/.zsh/completions/_s"
-        _BASH_COMP_XDG="$HOME/.local/share/bash-completion/completions/s"
-        _BASH_COMP_CFG="$CONFIG_DIR/completion.bash"
-        _ctmp=$(mktemp)
-        if curl -fsSL --max-time 10 "$REPO_RAW/completion.zsh" -o "$_ctmp" 2>/dev/null; then
-            [[ -f "$_ZSH_COMP" ]] && cp "$_ctmp" "$_ZSH_COMP" && printf "  ${GREEN}✓${RESET} completion.zsh\n"
-        fi
-        if curl -fsSL --max-time 10 "$REPO_RAW/completion.bash" -o "$_ctmp" 2>/dev/null; then
-            [[ -f "$_BASH_COMP_XDG" ]] && cp "$_ctmp" "$_BASH_COMP_XDG"
-            [[ -f "$_BASH_COMP_CFG" ]] && cp "$_ctmp" "$_BASH_COMP_CFG"
-            { [[ -f "$_BASH_COMP_XDG" ]] || [[ -f "$_BASH_COMP_CFG" ]]; } && \
-                printf "  ${GREEN}✓${RESET} completion.bash\n"
-        fi
-        rm -f "$_ctmp"
-
-        # Clear zsh completion cache so new _s is picked up immediately
-        rm -f "$HOME/.zcompdump" "$HOME"/.zcompdump-* 2>/dev/null
+        bash "$_repo_dir/install.sh" --update
 
         # Sync favorites from team server if configured
         if [[ -n "$SYNC_HOST" ]]; then
