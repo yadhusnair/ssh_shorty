@@ -1007,6 +1007,8 @@ case "$1" in
                 printf "Usage: s -d <nick:path> [local_dest]\n"
                 printf "       s -d <alias|/path> <nick> [local_dest]\n"; exit 1; }
             ALIAS="$2"; NICK="$3"; LOCAL_DEST="${4:-.}"
+            TARGET=$(_lookup_target "$NICK")
+            [[ -z "$TARGET" ]] && { printf "Nickname not found: %s\n" "$NICK"; exit 1; }
             if [[ "$ALIAS" == /* || "$ALIAS" == ~* ]]; then
                 REMOTE_PATH="$ALIAS"
             else
