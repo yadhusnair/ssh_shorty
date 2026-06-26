@@ -73,42 +73,38 @@ cp "$SCRIPT_DIR/s" "$BIN_DIR/s"
 chmod +x "$BIN_DIR/s"
 echo "  Installed: $BIN_DIR/s"
 
-# Install machines.txt (don't overwrite if it already exists)
-if [ -f "$CONFIG_DIR/machines.txt" ]; then
-    echo "  Skipped:   $CONFIG_DIR/machines.txt (already exists)"
-else
-    cp "$SCRIPT_DIR/machines.txt" "$CONFIG_DIR/machines.txt"
-    echo "  Installed: $CONFIG_DIR/machines.txt"
-fi
+# ── Fleet config + machines.txt ───────────────────────────────────────────────
+_sync_pulled_machines=false
+_sync_pulled_paths=false
+_sync_pulled_favs=false
 
-# Install machine-paths.txt (don't overwrite if it already exists)
-if [ -f "$CONFIG_DIR/machine-paths.txt" ]; then
-    echo "  Skipped:   $CONFIG_DIR/machine-paths.txt (already exists)"
+# Write config (skip if already exists)
+if [ -f "$CONFIG_DIR/config" ]; then
+    echo "  Skipped:   $CONFIG_DIR/config (already exists)"
+    # Load existing SYNC_HOST so the pull attempt below can use it
+    # shellcheck source=/dev/null
+    source "$CONFIG_DIR/config" 2>/dev/null || true
 else
-    cp "$SCRIPT_DIR/machine-paths.txt" "$CONFIG_DIR/machine-paths.txt"
-    echo "  Installed: $CONFIG_DIR/machine-paths.txt  (edit to add path aliases)"
-fi
+    # If machines.txt is absent, offer to configure sync and pull fleet files now
+    if [ ! -f "$CONFIG_DIR/machines.txt" ]; then
+        echo ""
+        echo "  No fleet config found. You can pull machines.txt from a shared sync"
+        echo "  server now, or start with a stub file and add devices manually later."
+        echo ""
+        printf "  Set up fleet sync host now? [Y/n] "
+        read -r _setup_sync
+        if [[ ! "$_setup_sync" =~ ^[Nn] ]]; then
+            printf "  Sync host (e.g. ati@192.168.6.12): "
+            read -r SYNC_HOST
+            printf "  Remote path [default: validation/machines.txt]: "
+            read -r _rpath
+            SYNC_REMOTE_PATH="${_rpath:-validation/machines.txt}"
+        fi
+        echo ""
+    fi
 
-# Create favorites.txt (don't overwrite if it already exists)
-if [ ! -f "$CONFIG_DIR/favorites.txt" ]; then
-    cat > "$CONFIG_DIR/favorites.txt" << 'EOF'
-# Favorite run commands — alias = full command
-# Add with: s --fav docker_restart_mule = docker restart mule
-# Run with: s --run <nick> docker_restart_mule
-# Tab-complete aliases with: s --run <nick> <TAB>
-docker_ps = docker ps
-docker_restart_mule = docker restart mule
-systemctl_status = systemctl status
-journalctl_follow = journalctl -f
-EOF
-    echo "  Installed: $CONFIG_DIR/favorites.txt  (edit to add your own)"
-else
-    echo "  Skipped:   $CONFIG_DIR/favorites.txt (already exists)"
-fi
-
-# Create config file template (don't overwrite)
-if [ ! -f "$CONFIG_DIR/config" ]; then
-    cat > "$CONFIG_DIR/config" << 'EOF'
+    # Write config file
+    cat > "$CONFIG_DIR/config" << EOF
 # ssh_shorty fleet sync config
 #
 # Set SYNC_HOST to share machines.txt across your team via a shared server.
@@ -121,11 +117,75 @@ if [ ! -f "$CONFIG_DIR/config" ]; then
 # Optional — override the remote path (default: ~/validation/machines.txt):
 #   SYNC_REMOTE_PATH=validation/machines.txt
 
-SYNC_HOST=""
+SYNC_HOST="${SYNC_HOST:-}"
+SYNC_REMOTE_PATH="${SYNC_REMOTE_PATH:-validation/machines.txt}"
 EOF
-    echo "  Installed: $CONFIG_DIR/config  (edit to enable fleet sync)"
-else
-    echo "  Skipped:   $CONFIG_DIR/config (already exists)"
+    echo "  Installed: $CONFIG_DIR/config"
+fi
+
+# If sync is configured, try to pull fleet files now
+if [[ -n "${SYNC_HOST:-}" ]]; then
+    _rdir="${SYNC_REMOTE_PATH%/*}"
+    echo "  Pulling fleet files from $SYNC_HOST..."
+
+    if scp -q -o BatchMode=yes -o ConnectTimeout=8 \
+            "$SYNC_HOST:${SYNC_REMOTE_PATH}" "$CONFIG_DIR/machines.txt" 2>/dev/null; then
+        echo "  Pulled:    $CONFIG_DIR/machines.txt"
+        _sync_pulled_machines=true
+    else
+        echo "  Warning:   could not reach $SYNC_HOST — will create stub machines.txt"
+    fi
+
+    if scp -q -o BatchMode=yes -o ConnectTimeout=8 \
+            "$SYNC_HOST:${_rdir}/machine-paths.txt" "$CONFIG_DIR/machine-paths.txt" 2>/dev/null; then
+        echo "  Pulled:    $CONFIG_DIR/machine-paths.txt"
+        _sync_pulled_paths=true
+    fi
+
+    if scp -q -o BatchMode=yes -o ConnectTimeout=8 \
+            "$SYNC_HOST:${_rdir}/favorites.txt" "$CONFIG_DIR/favorites.txt" 2>/dev/null; then
+        echo "  Pulled:    $CONFIG_DIR/favorites.txt"
+        _sync_pulled_favs=true
+    fi
+fi
+
+# machines.txt — use pulled copy, existing copy, or create stub
+if [ -f "$CONFIG_DIR/machines.txt" ] && [ "$_sync_pulled_machines" = false ]; then
+    echo "  Skipped:   $CONFIG_DIR/machines.txt (already exists)"
+elif [ "$_sync_pulled_machines" = false ]; then
+    cat > "$CONFIG_DIR/machines.txt" << 'EOF'
+# nickname   user@host-or-ip   [#tag ...]
+# Add devices with:   s --add mydevice ati@10.0.0.5 #tag
+# Remove with:        s --remove mydevice
+# List all:           s --list
+test         test@1234
+EOF
+    echo "  Created:   $CONFIG_DIR/machines.txt  (stub — add your devices with s --add)"
+fi
+
+# machine-paths.txt
+if [ -f "$CONFIG_DIR/machine-paths.txt" ] && [ "$_sync_pulled_paths" = false ]; then
+    echo "  Skipped:   $CONFIG_DIR/machine-paths.txt (already exists)"
+elif [ "$_sync_pulled_paths" = false ]; then
+    cp "$SCRIPT_DIR/machine-paths.txt" "$CONFIG_DIR/machine-paths.txt" 2>/dev/null || \
+        touch "$CONFIG_DIR/machine-paths.txt"
+    echo "  Installed: $CONFIG_DIR/machine-paths.txt  (edit to add path aliases)"
+fi
+
+# favorites.txt
+if [ -f "$CONFIG_DIR/favorites.txt" ] && [ "$_sync_pulled_favs" = false ]; then
+    echo "  Skipped:   $CONFIG_DIR/favorites.txt (already exists)"
+elif [ "$_sync_pulled_favs" = false ]; then
+    cat > "$CONFIG_DIR/favorites.txt" << 'EOF'
+# Favorite run commands — alias = full command
+# Add with: s --fav docker_restart_mule = docker restart mule
+# Run with: s --run <nick> docker_restart_mule
+# Tab-complete aliases with: s --run <nick> <TAB>
+docker_ps = docker ps
+systemctl_status = systemctl status
+journalctl_follow = journalctl -f
+EOF
+    echo "  Installed: $CONFIG_DIR/favorites.txt  (edit to add your own)"
 fi
 
 # ── Zsh completion ─────────────────────────────────────────────────────────────
