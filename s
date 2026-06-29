@@ -172,8 +172,8 @@ usage() {
     printf "  s --remove <nickname>                       remove a device\n"
     printf "  s --tag <nickname> <tag>                    add a tag to a device (# auto-added)\n"
     printf "  s --sync                                    pull/push fleet from SYNC_HOST\n"
-    printf "  s --ping <nickname>                         check reachability\n"
-    printf "  s --poll <nickname>                         wait until online then connect\n"
+    printf "  s --ping <nick|@group|prefix|--all>         check reachability\n"
+    printf "  s --poll <nickname> [--timeout <sec>]       wait until online then connect\n"
     printf "  s --keydeploy <nick|@group>                 deploy SSH key\n"
     printf "  s --export-ssh-config                       write machines.txt → ~/.ssh/config\n"
     printf "  s --import                                  import from ~/.ssh/config\n"
@@ -329,17 +329,19 @@ _lookup_target() {
     printf '%s\n' "$t"
 }
 
-# Sets global DEVICE_SSH_OPTS array for nick — reads port= and key= from machines.txt
+# Sets global DEVICE_SSH_OPTS array for nick — reads port=, key=, forward= from machines.txt
+# forward= supports multiple entries: forward=8080:9090 forward=5432:5432
 _load_device_opts() {
     DEVICE_SSH_OPTS=()
-    DEVICE_FORWARD=""
+    DEVICE_FORWARD=()
     local line
     line=$(awk -v n="$1" '$1 == n {print; exit}' "$MAPFILE" 2>/dev/null)
     for field in $line; do
         case "$field" in
-            port=*) DEVICE_SSH_OPTS+=(-p "${field#port=}") ;;
-            key=*)  DEVICE_SSH_OPTS+=(-i "${field#key=}") ;;
-            forward=*) DEVICE_FORWARD="${field#forward=}" ;;
+            port=*)    DEVICE_SSH_OPTS+=(-p "${field#port=}") ;;
+            key=*)     DEVICE_SSH_OPTS+=(-i "${field#key=}") ;;
+            forward=*) DEVICE_SSH_OPTS+=(-L "${field#forward=}")
+                       DEVICE_FORWARD+=("${field#forward=}") ;;
         esac
     done
 }
@@ -404,7 +406,7 @@ _apply_mac_resolution() {
 }
 
 # Resolves a single nick (with prefix matching) and sets RESOLVED_NICK / RESOLVED_TARGET.
-# Returns 1 (with error message) if the nick is not found.
+# Returns 1 (with error message) if the nick is not found or ambiguous.
 _get_single_target() {
     local input="$1"
     local nick target
@@ -412,12 +414,18 @@ _get_single_target() {
     if _nick_exists "$input"; then
         nick="$input"
     else
-        # Prefix match
-        nick=$(awk -v p="$input" 'NF >= 2 && $1 !~ /^#/ && substr($1,1,length(p)) == p {print $1; exit}' "$MAPFILE")
-        if [[ -z "$nick" ]]; then
+        # Prefix match — collect ALL matches, error if ambiguous
+        local -a matches
+        mapfile -t matches < <(awk -v p="$input" \
+            'NF >= 2 && $1 !~ /^#/ && substr($1,1,length(p)) == p {print $1}' "$MAPFILE")
+        if [[ ${#matches[@]} -eq 0 ]]; then
             printf "Unknown device: %s\n" "$input" >&2
             return 1
+        elif [[ ${#matches[@]} -gt 1 ]]; then
+            printf "Ambiguous prefix '%s' matches: %s\n" "$input" "${matches[*]}" >&2
+            return 1
         fi
+        nick="${matches[0]}"
     fi
     target=$(_lookup_target "$nick")
     if [[ -z "$target" ]]; then
@@ -1175,24 +1183,52 @@ case "$1" in
         ;;
 
     --ping|-p)
-        [[ -z "$2" ]] && { printf "Usage: s --ping <nickname>\n"; exit 1; }
+        [[ -z "$2" ]] && { printf "Usage: s --ping <nick|@group|prefix|--all>\n"; exit 1; }
         _require_mapfile
-        TARGET=$(_lookup_target "$2")
-        [[ -z "$TARGET" ]] && {
-            printf "Nickname not found: %s\n" "$2"; exit 1; }
-        HOST="${TARGET#*@}"
-        printf "Pinging %s (%s)... " "$2" "$HOST"
-        if ping -c1 -W2 "$HOST" &>/dev/null; then
-            printf "${GREEN}reachable${RESET}\n"
+        # Collect targets via _resolve_targets (supports nick, @group, prefix, --all)
+        declare -a _ping_nicks _ping_targets
+        while IFS=' ' read -r _pn _pt; do
+            _ping_nicks+=("$_pn"); _ping_targets+=("$_pt")
+        done < <(_resolve_targets "$2")
+        if [[ ${#_ping_nicks[@]} -eq 0 ]]; then
+            printf "No devices found for: %s\n" "$2"; exit 1
+        fi
+        if [[ ${#_ping_nicks[@]} -eq 1 ]]; then
+            HOST="${_ping_targets[0]#*@}"
+            printf "Pinging %s (%s)... " "${_ping_nicks[0]}" "$HOST"
+            if nc -z -w2 "$HOST" 22 &>/dev/null; then
+                printf "${GREEN}reachable${RESET}\n"
+            else
+                printf "${RED}unreachable${RESET}\n"; exit 1
+            fi
         else
-            printf "${RED}unreachable${RESET}\n"; exit 1
+            printf "Pinging %d device(s)...\n" "${#_ping_nicks[@]}"
+            printf "  %-24s %-30s %s\n" "NICKNAME" "TARGET" "STATUS"
+            printf "  %s\n" "────────────────────────────────────────────────────────────────"
+            _ping_any_fail=0
+            for i in "${!_ping_nicks[@]}"; do
+                _ph="${_ping_targets[$i]#*@}"
+                ( if nc -z -w2 "$_ph" 22 &>/dev/null; then
+                      printf "  ${GREEN}●${RESET} %-24s %-30s ${GREEN}reachable${RESET}\n" \
+                          "${_ping_nicks[$i]}" "${_ping_targets[$i]}"
+                  else
+                      printf "  ${RED}○${RESET} %-24s %-30s ${RED}unreachable${RESET}\n" \
+                          "${_ping_nicks[$i]}" "${_ping_targets[$i]}"
+                  fi ) &
+            done
+            wait
         fi
         ;;
 
     --poll)
-        [[ -z "$2" ]] && { printf "Usage: s --poll <nickname>\n"; exit 1; }
+        [[ -z "$2" ]] && { printf "Usage: s --poll <nickname> [--timeout <seconds>]\n"; exit 1; }
         _require_mapfile
-        _get_single_target "$2" || exit 1
+        # Parse optional --timeout flag: s --poll fm85 --timeout 60
+        _poll_nick="$2"; _poll_timeout=0
+        if [[ "${3:-}" == "--timeout" && -n "${4:-}" ]]; then
+            _poll_timeout="$4"
+        fi
+        _get_single_target "$_poll_nick" || exit 1
         NICK="$RESOLVED_NICK"; TARGET="$RESOLVED_TARGET"
 
         _load_device_opts "$NICK"
@@ -1239,6 +1275,13 @@ case "$1" in
                 fi
                 _log_connection "$NICK" "$TARGET"
                 exec ssh "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" "$TARGET"
+            fi
+            # Timeout check (0 = no timeout)
+            if [[ $_poll_timeout -gt 0 ]] && (( SECONDS - start_ts >= _poll_timeout )); then
+                _clear_line
+                _show_cursor
+                printf "${RED}✗ Timed out waiting for %s after %ds${RESET}\n" "$NICK" "$_poll_timeout"
+                exit 1
             fi
         done
         ;;
@@ -1486,7 +1529,8 @@ case "$1" in
             printf "${DIM}↩  %s → %s${RESET}\n" "$LAST_NICK" "$LAST_TARGET"
         fi
         _log_connection "$LAST_NICK" "$LAST_TARGET"
-        exec ssh "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" "$LAST_TARGET"
+        shift  # drop the '-' arg so remaining args are extra ssh flags
+        exec ssh "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" "$LAST_TARGET" "$@"
         ;;
 
     -*)
