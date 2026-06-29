@@ -1,0 +1,108 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract version
+        id: ver
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Create release tarball
+        run: |
+          git archive \
+            --prefix="ssh_shorty-${{ steps.ver.outputs.version }}/" \
+            HEAD \
+            | gzip > "ssh_shorty-${{ steps.ver.outputs.version }}.tar.gz"
+
+      - name: Compute SHA256
+        id: sha
+        run: |
+          echo "sha256=$(sha256sum ssh_shorty-${{ steps.ver.outputs.version }}.tar.gz | awk '{print $1}')" \
+            >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: "ssh_shorty-${{ steps.ver.outputs.version }}.tar.gz"
+          generate_release_notes: true
+          body: |
+            ## Install
+
+            **macOS (Homebrew):**
+            ```bash
+            brew tap yadhusnair/ssh_shorty
+            brew install s
+            ```
+
+            **Linux (one-liner):**
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/yadhusnair/ssh_shorty/main/install.sh | bash
+            ```
+
+            **Manual:**
+            ```bash
+            curl -fsSL https://github.com/yadhusnair/ssh_shorty/releases/latest/download/ssh_shorty-${{ steps.ver.outputs.version }}.tar.gz | tar xz
+            cd ssh_shorty-${{ steps.ver.outputs.version }}
+            bash install.sh
+            ```
+
+            **SHA256:** `${{ steps.sha.outputs.sha256 }}`
+
+      - name: Update Homebrew formula
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          git clone \
+            "https://x-access-token:${TAP_TOKEN}@github.com/yadhusnair/homebrew-ssh_shorty.git" \
+            tap
+
+          mkdir -p tap/Formula
+
+          cat > tap/Formula/s.rb << 'FORMULA'
+          class S < Formula
+            desc "Fleet SSH management CLI — connect, broadcast, and monitor remote devices by nickname"
+            homepage "https://github.com/yadhusnair/ssh_shorty"
+            url "https://github.com/yadhusnair/ssh_shorty/archive/refs/tags/TAGNAME.tar.gz"
+            sha256 "SHA256VAL"
+            license "MIT"
+            version "VERVAL"
+
+            def install
+              bin.install "s"
+              bash_completion.install "completion.bash" => "s"
+              zsh_completion.install "completion.zsh" => "_s"
+            end
+
+            test do
+              assert_match "Usage", shell_output("#{bin}/s --help")
+            end
+          end
+          FORMULA
+
+          # Substitute placeholders
+          sed -i \
+            -e "s|TAGNAME|${{ github.ref_name }}|g" \
+            -e "s|SHA256VAL|${{ steps.sha.outputs.sha256 }}|g" \
+            -e "s|VERVAL|${{ steps.ver.outputs.version }}|g" \
+            tap/Formula/s.rb
+
+          cd tap
+          git config user.email "github-actions@github.com"
+          git config user.name "GitHub Actions"
+          git add Formula/s.rb
+          git commit -m "Update s to ${{ github.ref_name }}"
+          git push
