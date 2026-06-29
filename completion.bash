@@ -128,9 +128,16 @@ _ssh_shorty_complete() {
         fi
     else
         case "$first" in
-            --set|-s|--remove|-r|--ping|-p|--poll|--tunnel|-t)
+            --set|-s|--remove|-r|--poll|--tunnel|-t)
                 [[ "$cword" -eq 2 ]] && \
                     COMPREPLY=( $(compgen -W "${machines[*]}" -- "$cur") )
+                ;;
+            --ping|-p)
+                if [[ "$cword" -eq 2 ]]; then
+                    local -a groups
+                    mapfile -t groups < <(_get_groups)
+                    COMPREPLY=( $(compgen -W "${machines[*]} ${groups[*]} --all" -- "$cur") )
+                fi
                 ;;
             --status|--list|--watch|--sysinfo)
                 if [[ "$cword" -eq 2 && "$cur" == @* ]]; then

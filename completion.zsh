@@ -138,7 +138,20 @@ _ssh_shorty() {
     fi
   else
     case "$first" in
-      --set|--remove|--ping|--poll|--tunnel|-t)
+      --set|--remove|--tunnel|-t)
+        (( CURRENT == 3 )) && _describe 'machine' machines
+        ;;
+      --ping)
+        if (( CURRENT == 3 )); then
+          if [[ "$PREFIX" == @* ]]; then
+            compadd -S ' ' -- "${groups[@]}" '--all'
+          else
+            compadd -S ' ' -- "${machines[@]}"
+            compadd -S ' ' -- "${groups[@]}"
+          fi
+        fi
+        ;;
+      --poll|-p)
         (( CURRENT == 3 )) && _describe 'machine' machines
         ;;
       --status|--list|--watch|--sysinfo)
