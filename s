@@ -1042,7 +1042,7 @@ case "$1" in
         TARGET=$(_lookup_target "$NICK")
         [[ -z "$TARGET" ]] && { printf "Nickname not found: %s\n" "$NICK"; exit 1; }
         _load_device_opts "$NICK"
-        EXT="${REMOTE_PATH##*.}"
+        EXT="${REMOTE_PATH##*.}"; EXT="${EXT,,}"
         TMP_FILE=$(mktemp "/tmp/s_view_XXXXXX.${EXT}")
         trap 'rm -f "$TMP_FILE"' EXIT
         printf "Fetching ${BOLD}%s${RESET}:%s ...\n" "$NICK" "$REMOTE_PATH"
@@ -1051,16 +1051,33 @@ case "$1" in
             printf "${RED}Failed to fetch %s from %s${RESET}\n" "$REMOTE_PATH" "$NICK" >&2
             exit 1
         fi
-        if command -v xdg-open &>/dev/null; then
-            xdg-open "$TMP_FILE" 2>/dev/null
-        elif command -v open &>/dev/null; then
-            open "$TMP_FILE"
-        else
-            printf "No viewer found. File saved at: %s\n" "$TMP_FILE"
+        # Try blocking viewers so the temp file lives until the window closes.
+        # Fall back to xdg-open/open but skip auto-delete so the file outlives us.
+        _view_opened=false
+        case "$EXT" in
+            png|jpg|jpeg|gif|bmp|webp|tiff|svg)
+                for _v in feh eog gpicview shotwell display; do
+                    if command -v "$_v" &>/dev/null; then
+                        "$_v" "$TMP_FILE" 2>/dev/null; _view_opened=true; break
+                    fi
+                done ;;
+            mp4|mkv|avi|mov|webm|flv|m4v|wmv)
+                for _v in mpv vlc mplayer; do
+                    if command -v "$_v" &>/dev/null; then
+                        "$_v" "$TMP_FILE" 2>/dev/null; _view_opened=true; break
+                    fi
+                done ;;
+        esac
+        if [[ "$_view_opened" == false ]]; then
+            # xdg-open/open returns immediately — keep the file and tell the user
             trap - EXIT
+            if command -v xdg-open &>/dev/null; then
+                xdg-open "$TMP_FILE" 2>/dev/null &
+            elif command -v open &>/dev/null; then
+                open "$TMP_FILE" &
+            fi
+            printf "Saved to: %s\n" "$TMP_FILE"
         fi
-        # Give the viewer a moment to open before the temp file is deleted
-        sleep 3
         ;;
 
     -u|--upload)
