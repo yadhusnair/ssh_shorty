@@ -1043,7 +1043,8 @@ case "$1" in
         [[ -z "$TARGET" ]] && { printf "Nickname not found: %s\n" "$NICK"; exit 1; }
         _load_device_opts "$NICK"
         EXT="${REMOTE_PATH##*.}"; EXT="${EXT,,}"
-        TMP_FILE=$(mktemp "/tmp/s_view_XXXXXX.${EXT}")
+        TMP_FILE=$(mktemp --suffix=".${EXT}" "/tmp/s_view_XXXXXX")
+        chmod 600 "$TMP_FILE"
         trap 'rm -f "$TMP_FILE"' EXIT
         printf "Fetching ${BOLD}%s${RESET}:%s ...\n" "$NICK" "$REMOTE_PATH"
         if ! ssh "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" "$TARGET" \
