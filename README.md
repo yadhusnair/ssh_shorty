@@ -20,12 +20,28 @@ s -d fm85:/opt/ati/candump.log       # download a specific file
 
 ---
 
-## Install (individual)
+## Install
+
+### macOS (Homebrew)
 
 ```bash
-git clone <repo-url>
+brew tap yadhusnair/ssh_shorty
+brew install s
+```
+
+### Linux (one-liner)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/yadhusnair/ssh_shorty/main/install.sh | bash
+exec zsh        # or: exec bash
+```
+
+### Manual
+
+```bash
+git clone https://github.com/yadhusnair/ssh_shorty.git
 cd ssh_shorty
-./install.sh
+bash install.sh
 exec zsh        # or: exec bash
 ```
 
