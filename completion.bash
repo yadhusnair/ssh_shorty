@@ -14,7 +14,7 @@ _ssh_shorty_complete() {
         [[ "${COMP_WORDS[i]}" == ":" ]] && (( cword -= 2 ))
     done
 
-    local subcommands="--list --add --set --remove --tag --sync --ping --poll --edit --paths --help --update --fav --status --watch --run --run-script --sysinfo --tail --tunnel --close --export-ssh-config --keydeploy --last --import -u --upload -d --download --view -m"
+    local subcommands="--list --add --set --remove --tag --untag --sync --ping --poll --edit --paths --help --update --fav --status --watch --run --run-script --sysinfo --tail --tunnel --close --export-ssh-config --keydeploy --last --import -u --upload -d --download --view -m"
     local mapfile_path="$HOME/.config/ssh_shorty/machines.txt"
     local paths_file="$HOME/.config/ssh_shorty/machine-paths.txt"
     local machines=()
@@ -139,6 +139,15 @@ _ssh_shorty_complete() {
                     COMPREPLY=( $(compgen -W "${machines[*]} ${groups[*]} --all" -- "$cur") )
                 fi
                 ;;
+            --untag)
+                if [[ "$cword" -eq 2 ]]; then
+                    COMPREPLY=( $(compgen -W "${machines[*]}" -- "$cur") )
+                elif [[ "$cword" -eq 3 ]]; then
+                    local -a tags_raw
+                    mapfile -t tags_raw < <(_get_tags_raw | sed 's/^#//')
+                    COMPREPLY=( $(compgen -W "${tags_raw[*]}" -- "$cur") )
+                fi
+                ;;
             --status|--list|--watch|--sysinfo)
                 if [[ "$cword" -eq 2 && "$cur" == @* ]]; then
                     local -a groups; mapfile -t groups < <(_get_groups)
@@ -255,7 +264,14 @@ _ssh_shorty_complete() {
                     COMPREPLY=( $(compgen -W "${_faliases[*]}" -- "$cur") )
                 fi
                 ;;
-            --last|--add|--edit|--import|--help|--export-ssh-config)
+            --add)
+                if [[ "$cword" -ge 4 ]]; then
+                    local -a tags_raw
+                    mapfile -t tags_raw < <(_get_tags_raw | sed 's/^#//')
+                    COMPREPLY=( $(compgen -W "${tags_raw[*]}" -- "$cur") )
+                fi
+                ;;
+            --last|--edit|--import|--help|--export-ssh-config)
                 ;;
             *)
                 # First arg is a nick — rsync pull or multi-device

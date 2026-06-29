@@ -1,7 +1,7 @@
 #!/bin/bash
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 
-VERSION="20260634"
+VERSION="20260635"
 REPO_RAW="https://raw.githubusercontent.com/yadhusnair/ssh_shorty/main"
 
 MAPFILE="$HOME/.config/ssh_shorty/machines.txt"
@@ -172,6 +172,7 @@ usage() {
     printf "  s -u <local-path> <nick>[:<alias|path>]    upload file/dir (alias resolved)\n"
     printf "  s --remove <nickname>                       remove a device\n"
     printf "  s --tag <nickname> <tag>                    add a tag to a device (# auto-added)\n"
+    printf "  s --untag <nickname> <tag>                  remove a tag from a device\n"
     printf "  s --sync                                    pull/push fleet from SYNC_HOST\n"
     printf "  s --ping <nick|@group|prefix|--all>         check reachability\n"
     printf "  s --poll <nickname> [--timeout <sec>]       wait until online then connect\n"
@@ -203,8 +204,8 @@ _sync_push() {
                 "$FAVS_FILE" "${SYNC_HOST}:${FAVS_SYNC_REMOTE_PATH}" 2>/dev/null
         # Bump version file so all clients know to pull within 30s
         local ver; ver=$(date +%s)
-        ssh -q -o BatchMode=yes -o ConnectTimeout=5 \
-            "$SYNC_HOST" "echo $ver > ~/${rdir}/.machines_version" 2>/dev/null
+        printf '%s\n' "$ver" | ssh -q -o BatchMode=yes -o ConnectTimeout=5 \
+            "$SYNC_HOST" "cat > ~/${rdir}/.machines_version" 2>/dev/null
         echo "$ver" > "$CONFIG_DIR/.machines_version" 2>/dev/null
         printf "  ${GREEN}synced${RESET} → %s\n" "$SYNC_HOST"
         touch "$CONFIG_DIR/.last_sync" 2>/dev/null
@@ -240,8 +241,8 @@ _sync_push_paths() {
     if scp -q -o BatchMode=yes -o ConnectTimeout=5 \
             "$PATHS_FILE" "${SYNC_HOST}:${PATHS_SYNC_REMOTE_PATH}" 2>/dev/null; then
         local ver; ver=$(date +%s)
-        ssh -q -o BatchMode=yes -o ConnectTimeout=5 \
-            "$SYNC_HOST" "echo $ver > ~/${rdir}/.machines_version" 2>/dev/null
+        printf '%s\n' "$ver" | ssh -q -o BatchMode=yes -o ConnectTimeout=5 \
+            "$SYNC_HOST" "cat > ~/${rdir}/.machines_version" 2>/dev/null
         echo "$ver" > "$CONFIG_DIR/.machines_version" 2>/dev/null
         printf "  ${GREEN}synced${RESET} paths → %s\n" "$SYNC_HOST"
         touch "$CONFIG_DIR/.last_sync" 2>/dev/null
@@ -460,8 +461,23 @@ _resolve_targets() {
 }
 
 _inplace_edit() {
-    local TF; TF=$(mktemp)
-    "$@" > "$TF" && mv "$TF" "$MAPFILE"
+    local TF; TF=$(mktemp "$CONFIG_DIR/.edit.XXXXXX")
+    if "$@" > "$TF"; then mv "$TF" "$MAPFILE"; else rm -f "$TF"; return 1; fi
+}
+
+# Extract SSH port from DEVICE_SSH_OPTS (defaults to 22)
+_get_ssh_port() {
+    local j p=22
+    for (( j=0; j<${#DEVICE_SSH_OPTS[@]}; j++ )); do
+        [[ "${DEVICE_SSH_OPTS[j]}" == "-p" ]] && { p="${DEVICE_SSH_OPTS[j+1]}"; break; }
+    done
+    printf '%s' "$p"
+}
+
+# Throttle background jobs to at most MAX concurrent (default 15)
+_throttle() {
+    local max="${1:-15}"
+    while (( $(jobs -rp 2>/dev/null | wc -l) >= max )); do sleep 0.05; done
 }
 
 _log_connection() {
@@ -618,10 +634,16 @@ case "$1" in
         tmpdir=$(mktemp -d)
         trap 'rm -rf "$tmpdir"; _show_cursor' EXIT INT TERM
         for i in "${!st_nicks[@]}"; do
-            host="${st_targets[$i]#*@}"
             safe="${st_nicks[$i]//\//_}"
-            ( ssh "${SSH_CTRL_OPTS[@]}" -o BatchMode=yes -o ConnectTimeout=3 "${st_targets[$i]}" \
-              "awk '{printf \"%s \",\$1}' /proc/loadavg 2>/dev/null; free | awk '/Mem:/ {printf \"%d%% \", int(\$3/\$2 * 100)}' 2>/dev/null; df -h / | awk 'NR==2 {print \$5}' 2>/dev/null" 2>/dev/null > "$tmpdir/${safe}_sys" && echo online || echo offline ) > "$tmpdir/$safe" &
+            _load_device_opts "${st_nicks[$i]}"
+            _sysinfo_target=$(_apply_mac_resolution "${st_nicks[$i]}" "${st_targets[$i]}")
+            _sysinfo_port=$(_get_ssh_port)
+            _sysinfo_host="${_sysinfo_target#*@}"
+            _throttle 15
+            ( nc -z -w3 "$_sysinfo_host" "$_sysinfo_port" &>/dev/null || { echo offline > "$tmpdir/$safe"; exit 0; }
+              ssh "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" -o BatchMode=yes -o ConnectTimeout=3 "$_sysinfo_target" \
+                "awk '{printf \"%s \",\$1}' /proc/loadavg 2>/dev/null; free | awk '/Mem:/ {printf \"%d%% \", int(\$3/\$2 * 100)}' 2>/dev/null; df -h / | awk 'NR==2 {print \$5}' 2>/dev/null" \
+                2>/dev/null > "$tmpdir/${safe}_sys" && echo online || echo offline ) > "$tmpdir/$safe" &
         done
         wait
         [[ -n "$spinner_pid" ]] && _spinner_stop "$spinner_pid"
@@ -646,8 +668,8 @@ case "$1" in
     --list|-l)
         _require_mapfile
         filter="${2-}"
-        printf "${BOLD}  %-24s %-30s %s${RESET}\n" "NICKNAME" "TARGET" "TAGS"
-        printf "  %s\n" "$(printf '─%.0s' {1..64})"
+        printf "${BOLD}  %-24s %-30s %-20s %s${RESET}\n" "NICKNAME" "TARGET" "TAGS" "OPTIONS"
+        printf "  %s\n" "$(printf '─%.0s' {1..84})"
         awk -v filter="$filter" -v bold="$BOLD" -v dim="$DIM" -v reset="$RESET" '
             NF < 2 || $1 ~ /^#/ { next }
             {
@@ -657,9 +679,12 @@ case "$1" in
                     for (i=3; i<=NF; i++) if ($i == tag) { found=1; break }
                     if (!found) next
                 }
-                tags = ""
-                for (i=3; i<=NF; i++) if ($i ~ /^#/) tags = tags " " $i
-                printf bold "  %-24s" reset " %-30s" dim " %s" reset "\n", $1, $2, tags
+                tags = ""; opts = ""
+                for (i=3; i<=NF; i++) {
+                    if ($i ~ /^#/) tags = tags " " $i
+                    else opts = opts " " $i
+                }
+                printf bold "  %-24s" reset " %-30s" dim " %-20s %s" reset "\n", $1, $2, tags, opts
             }
         ' "$MAPFILE" | sort
         ;;
@@ -682,9 +707,13 @@ case "$1" in
 
             watch_tmp=$(mktemp -d)
             for i in "${!watch_nicks[@]}"; do
-                host="${watch_targets[$i]#*@}"
                 safe="${watch_nicks[$i]//\//_}"
-                ( nc -z -w3 "$host" 22 &>/dev/null && echo online || echo offline ) \
+                _load_device_opts "${watch_nicks[$i]}"
+                _watch_target=$(_apply_mac_resolution "${watch_nicks[$i]}" "${watch_targets[$i]}")
+                _watch_host="${_watch_target#*@}"
+                _watch_port=$(_get_ssh_port)
+                _throttle 15
+                ( nc -z -w3 "$_watch_host" "$_watch_port" &>/dev/null && echo online || echo offline ) \
                     > "$watch_tmp/$safe" &
             done
             wait
@@ -725,9 +754,12 @@ case "$1" in
         [[ -z "$2" ]] && { printf "Usage: s --close <nick|@group|--all>\n"; exit 1; }
         _require_mapfile
         while IFS=' ' read -r nick target; do
-            if ssh -o "ControlPath=${SSH_CTRL_DIR}/%h-%p-%r" \
+            _load_device_opts "$nick"
+            resolved=$(_apply_mac_resolution "$nick" "$target")
+            if ssh "${DEVICE_SSH_OPTS[@]}" \
+                   -o "ControlPath=${SSH_CTRL_DIR}/%h-%p-%r" \
                    -o ControlMaster=no \
-                   -O stop "$target" 2>/dev/null; then
+                   -O stop "$resolved" 2>/dev/null; then
                 printf "  ${GREEN}closed${RESET}   %s\n" "$nick"
             else
                 printf "  ${DIM}no socket${RESET}  %s\n" "$nick"
@@ -766,15 +798,15 @@ case "$1" in
         trap 'rm -rf "$tmpdir"; _show_cursor' EXIT INT TERM
 
         for i in "${!st_nicks[@]}"; do
-            host="${st_targets[$i]#*@}"
             safe="${st_nicks[$i]//\//_}"
             _load_device_opts "${st_nicks[$i]}"
             resolved_target=$(_apply_mac_resolution "${st_nicks[$i]}" "${st_targets[$i]}")
             host="${resolved_target#*@}"
-            
+            port=$(_get_ssh_port)
+            _throttle 15
             if [[ $sysinfo -eq 1 ]]; then
-                ( 
-                    if nc -z -w3 "$host" 22 &>/dev/null; then
+                (
+                    if nc -z -w3 "$host" "$port" &>/dev/null; then
                         stats=$(ssh "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" -o BatchMode=yes -o ConnectTimeout=3 "$resolved_target" "top -bn1 2>/dev/null | awk '/[Cc]pu\\(s\\)/ {print \$2 + \$4; exit}' || echo '-'; free -m 2>/dev/null | awk '/Mem:/ {printf \"%d%%\", \$3/\$2 * 100.0; exit}' || echo '-'; df -h / 2>/dev/null | awk 'NR==2 {print \$5}' || echo '-'" 2>/dev/null)
                         if [[ -n "$stats" ]]; then
                             printf "online\n%s\n" "$stats" > "$tmpdir/$safe"
@@ -786,7 +818,7 @@ case "$1" in
                     fi
                 ) &
             else
-                ( nc -z -w3 "$host" 22 &>/dev/null && echo online || echo offline ) > "$tmpdir/$safe" &
+                ( nc -z -w3 "$host" "$port" &>/dev/null && echo online || echo offline ) > "$tmpdir/$safe" &
             fi
         done
         wait
@@ -913,14 +945,14 @@ case "$1" in
         
         run_nicks=(); run_targets=()
         while IFS=' ' read -r nick target; do
-            _load_device_opts "$nick"
-            target=$(_apply_mac_resolution "$nick" "$target")
             run_nicks+=("$nick"); run_targets+=("$target")
         done < <(_resolve_targets "$spec")
-        
+
         [[ ${#run_nicks[@]} -eq 0 ]] && { printf "No devices found for: %s\n" "$spec"; exit 1; }
-        
+
         if [[ ${#run_nicks[@]} -eq 1 ]]; then
+            _load_device_opts "${run_nicks[0]}"
+            run_targets[0]=$(_apply_mac_resolution "${run_nicks[0]}" "${run_targets[0]}")
             _anim_enabled && _glitch_line "[ ${run_nicks[0]} ] Running $script_file" "${CYAN}"
             ssh "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" "${run_targets[0]}" 'bash -s' -- "${local_args[@]}" < "$script_file"
         else
@@ -929,10 +961,14 @@ case "$1" in
             trap 'rm -rf "$tmpdir"; _show_cursor' EXIT INT TERM
             spinner_pid=""
             _anim_enabled && spinner_pid=$(_spinner_start "Transmitting script to ${#run_nicks[@]} device(s)...")
-            
+
             for i in "${!run_nicks[@]}"; do
                 safe="${run_nicks[$i]//\//_}"
-                ( ssh "${SSH_CTRL_OPTS[@]}" -o BatchMode=yes -o ConnectTimeout=5 "${run_targets[$i]}" 'bash -s' -- "${local_args[@]}" < "$script_file" 2>&1 ) > "$tmpdir/$safe.out" &
+                _throttle 15
+                ( _load_device_opts "${run_nicks[$i]}"
+                  _t=$(_apply_mac_resolution "${run_nicks[$i]}" "${run_targets[$i]}")
+                  ssh "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" -o BatchMode=yes -o ConnectTimeout=5 \
+                    "$_t" 'bash -s' -- "${local_args[@]}" < "$script_file" 2>&1 ) > "$tmpdir/$safe.out" &
             done
             wait
             [[ -n "$spinner_pid" ]] && _spinner_stop "$spinner_pid"
@@ -963,14 +999,24 @@ case "$1" in
         [[ ${#run_nicks[@]} -eq 0 ]] && {
             printf "No devices found for: %s\n" "$spec"; exit 1; }
 
+        if [[ "${cmd}" == "--dry-run" || "${2:-}" == "--dry-run" ]]; then
+            printf "${BOLD}Dry run — targets that would receive: %s${RESET}\n" "$cmd"
+            for i in "${!run_nicks[@]}"; do
+                _load_device_opts "${run_nicks[$i]}"
+                _dr=$(_apply_mac_resolution "${run_nicks[$i]}" "${run_targets[$i]}")
+                _dp=$(_get_ssh_port)
+                printf "  %-24s → %s (port %s)\n" "${run_nicks[$i]}" "$_dr" "$_dp"
+            done
+            exit 0
+        fi
+
         if [[ ${#run_nicks[@]} -eq 1 ]]; then
-            _anim_enabled && _glitch_line \
-                "[ ${run_nicks[0]} ]  $cmd" "${CYAN}"
-            # Allocate a PTY when running interactively so commands like
-            # watch/top/htop get a proper terminal instead of TERM=unknown.
+            _load_device_opts "${run_nicks[0]}"
+            run_targets[0]=$(_apply_mac_resolution "${run_nicks[0]}" "${run_targets[0]}")
+            _anim_enabled && _glitch_line "[ ${run_nicks[0]} ]  $cmd" "${CYAN}"
             _run_tty_flag=()
             [[ -t 1 ]] && _run_tty_flag=(-t)
-            ssh "${_run_tty_flag[@]}" "${SSH_CTRL_OPTS[@]}" "${run_targets[0]}" "$cmd"
+            ssh "${_run_tty_flag[@]}" "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" "${run_targets[0]}" "$cmd"
         else
             _anim_enabled && _matrix_header "[ BROADCAST ]"
 
@@ -984,8 +1030,11 @@ case "$1" in
 
             for i in "${!run_nicks[@]}"; do
                 safe="${run_nicks[$i]//\//_}"
-                ( ssh "${SSH_CTRL_OPTS[@]}" -o BatchMode=yes -o ConnectTimeout=5 \
-                    "${run_targets[$i]}" "$cmd" 2>&1 ) > "$tmpdir/$safe.out" &
+                _throttle 15
+                ( _load_device_opts "${run_nicks[$i]}"
+                  _t=$(_apply_mac_resolution "${run_nicks[$i]}" "${run_targets[$i]}")
+                  ssh "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" -o BatchMode=yes -o ConnectTimeout=5 \
+                    "$_t" "$cmd" 2>&1 ) > "$tmpdir/$safe.out" &
             done
             wait
 
@@ -1028,6 +1077,7 @@ case "$1" in
             fi
         fi
         _load_device_opts "$NICK"
+        TARGET=$(_apply_mac_resolution "$NICK" "$TARGET")
         ssh_cmd="ssh"
         for o in "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}"; do ssh_cmd+=" $o"; done
         _anim_enabled && _glitch_line \
@@ -1042,6 +1092,7 @@ case "$1" in
         TARGET=$(_lookup_target "$NICK")
         [[ -z "$TARGET" ]] && { printf "Nickname not found: %s\n" "$NICK"; exit 1; }
         _load_device_opts "$NICK"
+        TARGET=$(_apply_mac_resolution "$NICK" "$TARGET")
         EXT="${REMOTE_PATH##*.}"; EXT="${EXT,,}"
         TMP_FILE=$(mktemp --suffix=".${EXT}" "/tmp/s_view_XXXXXX")
         chmod 600 "$TMP_FILE"
@@ -1102,6 +1153,7 @@ case "$1" in
         TARGET=$(_lookup_target "$NICK")
         [[ -z "$TARGET" ]] && { printf "Nickname not found: %s\n" "$NICK"; exit 1; }
         _load_device_opts "$NICK"
+        TARGET=$(_apply_mac_resolution "$NICK" "$TARGET")
         ssh_cmd="ssh"
         for o in "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}"; do ssh_cmd+=" $o"; done
         _anim_enabled && _glitch_line \
@@ -1140,6 +1192,11 @@ case "$1" in
         _require_mapfile
         _nick_exists "$2" || {
             printf "Nickname '%s' not found.\n" "$2"; exit 1; }
+        if [[ -t 0 ]]; then
+            printf "Remove '%s' from fleet? [y/N] " "$2"
+            read -r _confirm
+            [[ ! "$_confirm" =~ ^[Yy]$ ]] && { printf "Aborted.\n"; exit 0; }
+        fi
         _inplace_edit awk -v n="$2" '$1 != n' "$MAPFILE"
         printf "Removed: %s\n" "$2"
         _sync_push
@@ -1161,6 +1218,20 @@ case "$1" in
         _inplace_edit awk -v n="$NICK" -v t="$TAG" \
             '$1 == n { $0 = $0 " " t } { print }' "$MAPFILE"
         printf "Tagged: %s → %s\n" "$NICK" "$TAG"
+        _sync_push
+        ;;
+
+    --untag)
+        [[ -z "$2" || -z "$3" ]] && {
+            printf "Usage: s --untag <nickname> <tag>\n"; exit 1; }
+        _require_mapfile
+        NICK="$2"; TAG="$3"
+        [[ "$TAG" != "#"* ]] && TAG="#$TAG"
+        _nick_exists "$NICK" || {
+            printf "Nickname '%s' not found.\n" "$NICK"; exit 1; }
+        _inplace_edit awk -v n="$NICK" -v t="$TAG" \
+            '$1 == n { gsub(" "t,""); gsub(t" ","") } { print }' "$MAPFILE"
+        printf "Untagged: %s removed %s\n" "$NICK" "$TAG"
         _sync_push
         ;;
 
@@ -1241,9 +1312,12 @@ case "$1" in
             printf "No devices found for: %s\n" "$2"; exit 1
         fi
         if [[ ${#_ping_nicks[@]} -eq 1 ]]; then
-            HOST="${_ping_targets[0]#*@}"
-            printf "Pinging %s (%s)... " "${_ping_nicks[0]}" "$HOST"
-            if nc -z -w2 "$HOST" 22 &>/dev/null; then
+            _load_device_opts "${_ping_nicks[0]}"
+            _pr=$(_apply_mac_resolution "${_ping_nicks[0]}" "${_ping_targets[0]}")
+            HOST="${_pr#*@}"
+            _pp=$(_get_ssh_port)
+            printf "Pinging %s (%s:%s)... " "${_ping_nicks[0]}" "$HOST" "$_pp"
+            if nc -z -w2 "$HOST" "$_pp" &>/dev/null; then
                 printf "${GREEN}reachable${RESET}\n"
             else
                 printf "${RED}unreachable${RESET}\n"; exit 1
@@ -1252,10 +1326,13 @@ case "$1" in
             printf "Pinging %d device(s)...\n" "${#_ping_nicks[@]}"
             printf "  %-24s %-30s %s\n" "NICKNAME" "TARGET" "STATUS"
             printf "  %s\n" "────────────────────────────────────────────────────────────────"
-            _ping_any_fail=0
             for i in "${!_ping_nicks[@]}"; do
-                _ph="${_ping_targets[$i]#*@}"
-                ( if nc -z -w2 "$_ph" 22 &>/dev/null; then
+                _load_device_opts "${_ping_nicks[$i]}"
+                _pr=$(_apply_mac_resolution "${_ping_nicks[$i]}" "${_ping_targets[$i]}")
+                _ph="${_pr#*@}"
+                _pp=$(_get_ssh_port)
+                _throttle 15
+                ( if nc -z -w2 "$_ph" "$_pp" &>/dev/null; then
                       printf "  ${GREEN}●${RESET} %-24s %-30s ${GREEN}reachable${RESET}\n" \
                           "${_ping_nicks[$i]}" "${_ping_targets[$i]}"
                   else
@@ -1281,6 +1358,7 @@ case "$1" in
         _load_device_opts "$NICK"
         TARGET=$(_apply_mac_resolution "$NICK" "$TARGET")
         HOST="${TARGET#*@}"
+        POLL_PORT=$(_get_ssh_port)
 
         if _anim_enabled; then
             _matrix_header "[ WAITING FOR ${NICK^^} ]"
@@ -1293,7 +1371,7 @@ case "$1" in
 
         while true; do
             # nc check in background so we can animate while waiting
-            nc -z -w5 "$HOST" 22 &>/dev/null &
+            nc -z -w5 "$HOST" "$POLL_PORT" &>/dev/null &
             nc_pid=$!
 
             frame=0
@@ -1611,6 +1689,7 @@ case "$1" in
             TARGET=$(_lookup_target "$NICK")
             [[ -z "$TARGET" ]] && { printf "Nickname not found: %s\n" "$NICK"; exit 1; }
             _load_device_opts "$NICK"
+            TARGET=$(_apply_mac_resolution "$NICK" "$TARGET")
             ssh_cmd="ssh"
             for o in "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}"; do ssh_cmd+=" $o"; done
             _anim_enabled && _glitch_line \
@@ -1623,6 +1702,7 @@ case "$1" in
             TARGET=$(_lookup_target "$NICK")
             [[ -z "$TARGET" ]] && { printf "Nickname not found: %s\n" "$NICK"; exit 1; }
             _load_device_opts "$NICK"
+            TARGET=$(_apply_mac_resolution "$NICK" "$TARGET")
             ssh_cmd="ssh"
             for o in "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}"; do ssh_cmd+=" $o"; done
             _anim_enabled && _glitch_line \

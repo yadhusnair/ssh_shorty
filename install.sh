@@ -55,8 +55,11 @@ if command -v zsh &>/dev/null; then
 else
     echo "  zsh not found. zsh offers richer tab-completion and a better interactive"
     echo "  experience than bash (native cycling, smarter matching, and more)."
-    printf "  Install zsh now? [Y/n] "
-    read -r _zsh_resp
+    _zsh_resp="n"
+    if [[ -t 0 ]]; then
+        printf "  Install zsh now? [Y/n] "
+        read -r _zsh_resp
+    fi
     if [[ ! "$_zsh_resp" =~ ^[Nn] ]]; then
         # Detect package manager and install
         if command -v apt-get &>/dev/null; then
@@ -83,8 +86,11 @@ else
             # Offer to set zsh as the default shell
             _zsh_path="$(command -v zsh)"
             if [[ "$SHELL" != "$_zsh_path" ]]; then
-                printf "  Set zsh as your default shell? [Y/n] "
-                read -r _chsh_resp
+                _chsh_resp="n"
+                if [[ -t 0 ]]; then
+                    printf "  Set zsh as your default shell? [Y/n] "
+                    read -r _chsh_resp
+                fi
                 if [[ ! "$_chsh_resp" =~ ^[Nn] ]]; then
                     # Ensure zsh is in /etc/shells
                     if ! grep -qx "$_zsh_path" /etc/shells 2>/dev/null; then
@@ -127,8 +133,11 @@ else
         echo "  No fleet config found. You can pull machines.txt from a shared sync"
         echo "  server now, or start with a stub file and add devices manually later."
         echo ""
-        printf "  Set up fleet sync host now? [Y/n] "
-        read -r _setup_sync
+        _setup_sync="n"
+        if [[ -t 0 ]]; then
+            printf "  Set up fleet sync host now? [Y/n] "
+            read -r _setup_sync
+        fi
         if [[ ! "$_setup_sync" =~ ^[Nn] ]]; then
             printf "  Sync host (e.g. ati@192.168.6.12): "
             read -r SYNC_HOST

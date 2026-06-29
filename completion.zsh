@@ -30,6 +30,7 @@ _ssh_shorty() {
     '--set:update a device IP'
     '--remove:remove a device'
     '--tag:add a tag to a device'
+    '--untag:remove a tag from a device'
     '--sync:pull/push fleet from SYNC_HOST'
     '--ping:check reachability'
     '--poll:wait until online then connect'
@@ -142,7 +143,7 @@ _ssh_shorty() {
       --set|--remove|--tunnel|-t)
         (( CURRENT == 3 )) && _describe 'machine' machines
         ;;
-      --ping)
+      --ping|-p)
         if (( CURRENT == 3 )); then
           if [[ "$PREFIX" == @* ]]; then
             compadd -Q -S ' ' -- "${groups[@]}" '--all'
@@ -152,7 +153,7 @@ _ssh_shorty() {
           fi
         fi
         ;;
-      --poll|-p)
+      --poll)
         (( CURRENT == 3 )) && _describe 'machine' machines
         ;;
       --status|--list|--watch|--sysinfo)
@@ -231,7 +232,7 @@ _ssh_shorty() {
           fi
         fi
         ;;
-      --tag)
+      --tag|--untag)
         if (( CURRENT == 3 )); then
           compadd -S ' ' -- "${machines[@]}"
         elif (( CURRENT == 4 )); then
@@ -250,7 +251,12 @@ _ssh_shorty() {
           compadd -S ' ' -- "${_faliases[@]}"
         fi
         ;;
-      --last|--add|--edit|--import|--help|--export-ssh-config)
+      --add)
+        if (( CURRENT >= 5 )); then
+          compadd -S ' ' -- "${tags_raw[@]}"
+        fi
+        ;;
+      --last|--edit|--import|--help|--export-ssh-config)
         ;;
       *)
         if [[ "$PREFIX" == *:* ]]; then
