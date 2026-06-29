@@ -41,6 +41,7 @@ _ssh_shorty() {
     '--status:parallel online/offline status table'
     '--watch:live-refreshing fleet status'
     '--sysinfo:live resource dashboard'
+    '--view:stream a remote image/video to local viewer'
     '--run:run command on one or many devices'
     '--run-script:run local script remotely'
     '--tail:tail a remote log using alias'
@@ -186,6 +187,17 @@ _ssh_shorty() {
           local -a nick_aliases
           nick_aliases=(${(f)"$(_aliases_for_nick "${words[3]}")"})
           compadd -S '' -- "${nick_aliases[@]}"
+        fi
+        ;;
+      --view)
+        if (( CURRENT == 3 )); then
+          _describe 'machine' machines
+        elif (( CURRENT == 4 )); then
+          if [[ "$PREFIX" == *:* ]]; then
+            _nick_colon_complete "$PREFIX"
+          else
+            _remote_paths_for "${words[3]}" "$PREFIX"
+          fi
         fi
         ;;
       -d|--download)

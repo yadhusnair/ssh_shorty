@@ -14,7 +14,7 @@ _ssh_shorty_complete() {
         [[ "${COMP_WORDS[i]}" == ":" ]] && (( cword -= 2 ))
     done
 
-    local subcommands="--list --add --set --remove --tag --sync --ping --poll --edit --paths --help --update --fav --status --watch --run --run-script --sysinfo --tail --tunnel --close --export-ssh-config --keydeploy --last --import -u --upload -d --download -m"
+    local subcommands="--list --add --set --remove --tag --sync --ping --poll --edit --paths --help --update --fav --status --watch --run --run-script --sysinfo --tail --tunnel --close --export-ssh-config --keydeploy --last --import -u --upload -d --download --view -m"
     local mapfile_path="$HOME/.config/ssh_shorty/machines.txt"
     local paths_file="$HOME/.config/ssh_shorty/machine-paths.txt"
     local machines=()
@@ -177,6 +177,17 @@ _ssh_shorty_complete() {
                     local -a aliases
                     mapfile -t aliases < <(_get_aliases_for_nick "${COMP_WORDS[2]}")
                     COMPREPLY=( $(compgen -W "${aliases[*]}" -- "$cur") )
+                fi
+                ;;
+            --view)
+                if [[ "$cword" -eq 2 ]]; then
+                    COMPREPLY=( $(compgen -W "${machines[*]}" -- "$cur") )
+                elif [[ "$cword" -eq 3 ]]; then
+                    if [[ -n "$nick_for_path" ]]; then
+                        _complete_nick_colon "$nick_for_path" "$cur"
+                    else
+                        _complete_nick_path "${COMP_WORDS[2]}" "$cur"
+                    fi
                 fi
                 ;;
             -d|--download)

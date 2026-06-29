@@ -1,7 +1,7 @@
 #!/bin/bash
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 
-VERSION="20260633"
+VERSION="20260634"
 REPO_RAW="https://raw.githubusercontent.com/yadhusnair/ssh_shorty/main"
 
 MAPFILE="$HOME/.config/ssh_shorty/machines.txt"
@@ -168,6 +168,7 @@ usage() {
     printf "  s --add <nickname> <user@ip> [#tags]        add a device\n"
     printf "  s --set <nickname> <user@ip>                update a device's IP\n"
     printf "  s -d <alias> <nick> [local_dest]            download via path alias\n"
+    printf "  s --view <nick> <path>                      stream remote file to local viewer\n"
     printf "  s -u <local-path> <nick>[:<alias|path>]    upload file/dir (alias resolved)\n"
     printf "  s --remove <nickname>                       remove a device\n"
     printf "  s --tag <nickname> <tag>                    add a tag to a device (# auto-added)\n"
@@ -1032,6 +1033,34 @@ case "$1" in
         _anim_enabled && _glitch_line \
             "Downloading  ${NICK}:${REMOTE_PATH}  →  ${LOCAL_DEST}" "${BOLD}${GREEN}"
         rsync -avP -e "$ssh_cmd" "$TARGET:$REMOTE_PATH" "$LOCAL_DEST"
+        ;;
+
+    --view)
+        [[ -z "$2" || -z "$3" ]] && {
+            printf "Usage: s --view <nick> <remote-path>\n"; exit 1; }
+        NICK="$2"; REMOTE_PATH="$3"
+        TARGET=$(_lookup_target "$NICK")
+        [[ -z "$TARGET" ]] && { printf "Nickname not found: %s\n" "$NICK"; exit 1; }
+        _load_device_opts "$NICK"
+        EXT="${REMOTE_PATH##*.}"
+        TMP_FILE=$(mktemp "/tmp/s_view_XXXXXX.${EXT}")
+        trap 'rm -f "$TMP_FILE"' EXIT
+        printf "Fetching ${BOLD}%s${RESET}:%s ...\n" "$NICK" "$REMOTE_PATH"
+        if ! ssh "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" "$TARGET" \
+               "cat $(printf '%q' "$REMOTE_PATH")" > "$TMP_FILE" 2>/dev/null; then
+            printf "${RED}Failed to fetch %s from %s${RESET}\n" "$REMOTE_PATH" "$NICK" >&2
+            exit 1
+        fi
+        if command -v xdg-open &>/dev/null; then
+            xdg-open "$TMP_FILE" 2>/dev/null
+        elif command -v open &>/dev/null; then
+            open "$TMP_FILE"
+        else
+            printf "No viewer found. File saved at: %s\n" "$TMP_FILE"
+            trap - EXIT
+        fi
+        # Give the viewer a moment to open before the temp file is deleted
+        sleep 3
         ;;
 
     -u|--upload)
