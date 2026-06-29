@@ -1,7 +1,7 @@
 #!/bin/bash
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 
-VERSION="20260635"
+VERSION="20260636"
 REPO_RAW="https://raw.githubusercontent.com/yadhusnair/ssh_shorty/main"
 
 MAPFILE="$HOME/.config/ssh_shorty/machines.txt"
@@ -1093,42 +1093,52 @@ case "$1" in
         [[ -z "$TARGET" ]] && { printf "Nickname not found: %s\n" "$NICK"; exit 1; }
         _load_device_opts "$NICK"
         TARGET=$(_apply_mac_resolution "$NICK" "$TARGET")
-        EXT="${REMOTE_PATH##*.}"; EXT="${EXT,,}"
-        TMP_FILE=$(mktemp --suffix=".${EXT}" "/tmp/s_view_XXXXXX")
-        chmod 600 "$TMP_FILE"
-        trap 'rm -f "$TMP_FILE"' EXIT
+
+        # Save to ~/Downloads/<nick>-<basename>, with counter if file already exists
+        mkdir -p "$HOME/Downloads"
+        _vbase="${REMOTE_PATH##*/}"
+        _vname="${_vbase%.*}"; _vext="${_vbase##*.}"
+        [[ "$_vname" == "$_vbase" ]] && _vext=""   # no extension
+        _vdest="$HOME/Downloads/${NICK}-${_vbase}"
+        if [[ -f "$_vdest" ]]; then
+            _vctr=2
+            while [[ -f "$HOME/Downloads/${NICK}-${_vname}-${_vctr}.${_vext}" ]]; do
+                (( _vctr++ ))
+            done
+            _vdest="$HOME/Downloads/${NICK}-${_vname}-${_vctr}.${_vext}"
+        fi
+
         printf "Fetching ${BOLD}%s${RESET}:%s ...\n" "$NICK" "$REMOTE_PATH"
         if ! ssh "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" "$TARGET" \
-               "cat $(printf '%q' "$REMOTE_PATH")" > "$TMP_FILE" 2>/dev/null; then
+               "cat $(printf '%q' "$REMOTE_PATH")" > "$_vdest" 2>/dev/null; then
+            rm -f "$_vdest"
             printf "${RED}Failed to fetch %s from %s${RESET}\n" "$REMOTE_PATH" "$NICK" >&2
             exit 1
         fi
-        # Try blocking viewers so the temp file lives until the window closes.
-        # Fall back to xdg-open/open but skip auto-delete so the file outlives us.
+        printf "Saved:  ${GREEN}%s${RESET}\n" "$_vdest"
+
+        EXT="${_vext,,}"
         _view_opened=false
         case "$EXT" in
             png|jpg|jpeg|gif|bmp|webp|tiff|svg)
                 for _v in feh eog gpicview shotwell display; do
                     if command -v "$_v" &>/dev/null; then
-                        "$_v" "$TMP_FILE" 2>/dev/null; _view_opened=true; break
+                        "$_v" "$_vdest" 2>/dev/null; _view_opened=true; break
                     fi
                 done ;;
             mp4|mkv|avi|mov|webm|flv|m4v|wmv)
                 for _v in mpv vlc mplayer; do
                     if command -v "$_v" &>/dev/null; then
-                        "$_v" "$TMP_FILE" 2>/dev/null; _view_opened=true; break
+                        "$_v" "$_vdest" 2>/dev/null; _view_opened=true; break
                     fi
                 done ;;
         esac
         if [[ "$_view_opened" == false ]]; then
-            # xdg-open/open returns immediately — keep the file and tell the user
-            trap - EXIT
             if command -v xdg-open &>/dev/null; then
-                xdg-open "$TMP_FILE" 2>/dev/null &
+                xdg-open "$_vdest" 2>/dev/null &
             elif command -v open &>/dev/null; then
-                open "$TMP_FILE" &
+                open "$_vdest" &
             fi
-            printf "Saved to: %s\n" "$TMP_FILE"
         fi
         ;;
 
