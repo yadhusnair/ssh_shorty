@@ -144,10 +144,10 @@ _ssh_shorty() {
       --ping)
         if (( CURRENT == 3 )); then
           if [[ "$PREFIX" == @* ]]; then
-            compadd -S ' ' -- "${groups[@]}" '--all'
+            compadd -Q -S ' ' -- "${groups[@]}" '--all'
           else
             compadd -S ' ' -- "${machines[@]}"
-            compadd -S ' ' -- "${groups[@]}"
+            compadd -Q -S ' ' -- "${groups[@]}"
           fi
         fi
         ;;
