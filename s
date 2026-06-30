@@ -667,6 +667,9 @@ if [[ -z "$1" ]]; then
     fi
 fi
 
+# Dedup machines.txt on every run — cheap awk pass, catches anything that snuck in
+_dedup_mapfile "$MAPFILE"
+
 # Background pull — skipped for interactive file-edit commands to avoid clobbering open editor
 case "$1" in --edit|--fav) ;; *) _sync_bg ;; esac
 
