@@ -1233,6 +1233,8 @@ case "$1" in
         [[ -z "$2" || -z "$3" ]] && {
             printf "Usage: s --add <nickname> <user@ip> [#tag ...]\n"; exit 1; }
         NICK="$2"; TARGET="$3"; shift 3; TAGS="$*"
+        [[ "$TARGET" != *@* ]] && {
+            printf "Invalid target '%s' — expected user@host or user@ip.\n" "$TARGET"; exit 1; }
         if [[ -f "$MAPFILE" ]] && _nick_exists "$NICK"; then
             printf "Nickname '%s' already exists. Use --set to update it.\n" "$NICK"; exit 1
         fi
@@ -1271,6 +1273,8 @@ case "$1" in
             printf "Usage: s --set <nickname> <user@ip>\n"; exit 1; }
         _require_mapfile
         NICK="$2"; TARGET="$3"
+        [[ "$TARGET" != *@* ]] && {
+            printf "Invalid target '%s' — expected user@host or user@ip.\n" "$TARGET"; exit 1; }
         _nick_exists "$NICK" || {
             printf "Nickname '%s' not found. Use --add to add it.\n" "$NICK"; exit 1; }
         # Block if another nick already owns this host (strip user@ for comparison)
