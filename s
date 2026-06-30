@@ -170,6 +170,7 @@ usage() {
     printf "  s -d <alias> <nick> [local_dest]            download via path alias\n"
     printf "  s --view <nick> <path>                      stream remote file to local viewer\n"
     printf "  s -u <local-path> <nick>[:<alias|path>]    upload file/dir (alias resolved)\n"
+    printf "  s --rename <nickname> <new-name>            rename a device\n"
     printf "  s --remove <nickname>                       remove a device\n"
     printf "  s --tag <nickname> <tag>                    add a tag to a device (# auto-added)\n"
     printf "  s --untag <nickname> <tag>                  remove a tag from a device\n"
@@ -1287,6 +1288,19 @@ case "$1" in
         _inplace_edit awk -v n="$NICK" -v t="$TARGET" \
             '$1 == n {$2 = t} {print}' "$MAPFILE"
         printf "Updated: %s → %s\n" "$NICK" "$TARGET"
+        _sync_push
+        ;;
+
+    --rename)
+        [[ -z "$2" || -z "$3" ]] && {
+            printf "Usage: s --rename <old-nickname> <new-nickname>\n"; exit 1; }
+        _require_mapfile
+        _nick_exists "$2" || {
+            printf "Nickname '%s' not found.\n" "$2"; exit 1; }
+        _nick_exists "$3" && {
+            printf "Nickname '%s' already exists.\n" "$3"; exit 1; }
+        _inplace_edit awk -v old="$2" -v new="$3" '$1==old{$1=new}{print}' "$MAPFILE"
+        printf "Renamed: %s → %s\n" "$2" "$3"
         _sync_push
         ;;
 

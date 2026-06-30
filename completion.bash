@@ -14,7 +14,7 @@ _ssh_shorty_complete() {
         [[ "${COMP_WORDS[i]}" == ":" ]] && (( cword -= 2 ))
     done
 
-    local subcommands="--list --add --set --remove --tag --untag --sync --ping --poll --edit --paths --help --update --fav --status --watch --run --run-script --sysinfo --tail --tunnel --close --export-ssh-config --keydeploy --last --import -u --upload -d --download --view -m"
+    local subcommands="--list --add --set --rename --remove --tag --untag --sync --ping --poll --edit --paths --help --update --fav --status --watch --run --run-script --sysinfo --tail --tunnel --close --export-ssh-config --keydeploy --last --import -u --upload -d --download --view -m"
     local mapfile_path="$HOME/.config/ssh_shorty/machines.txt"
     local paths_file="$HOME/.config/ssh_shorty/machine-paths.txt"
     local machines=()
@@ -128,7 +128,7 @@ _ssh_shorty_complete() {
         fi
     else
         case "$first" in
-            --set|-s|--remove|-r|--poll|--tunnel|-t)
+            --set|-s|--rename|--remove|-r|--poll|--tunnel|-t)
                 [[ "$cword" -eq 2 ]] && \
                     COMPREPLY=( $(compgen -W "${machines[*]}" -- "$cur") )
                 ;;
