@@ -135,7 +135,16 @@ _ssh_shorty() {
     elif [[ "$PREFIX" == @* ]]; then
       compadd -S '' -- "${groups[@]}"
     elif [[ "$PREFIX" == -* ]]; then
-      _describe 'subcommand' subcommands
+      # If PREFIX is an exact subcommand that takes a machine/group next,
+      # show machines right away (no need to press space first)
+      case "$PREFIX" in
+        --run|--run-script|--set|--rename|--remove|--tag|--untag| \
+        --tail|--ping|--poll|--tunnel|-t|--keydeploy|--close| \
+        --view|--watch|--status|--sysinfo|-m)
+          _nick_or_group ;;
+        *)
+          _describe 'subcommand' subcommands ;;
+      esac
     else
       compadd -S '' -- "${machines[@]}"
     fi
