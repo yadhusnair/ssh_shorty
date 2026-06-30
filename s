@@ -193,6 +193,29 @@ _sync_remote_dir() { printf '%s' "${SYNC_REMOTE_PATH%/*}"; }
 _sync_push() {
     [[ -z "$SYNC_HOST" ]] && return 0
     local rdir; rdir=$(_sync_remote_dir)
+
+    # Pull-before-push: fetch remote, union-merge (add remote nicks absent locally), dedup IPs
+    local _spr; _spr=$(mktemp "$CONFIG_DIR/.sync_r.XXXXXX")
+    if scp -q -o BatchMode=yes -o ConnectTimeout=5 \
+            "${SYNC_HOST}:${SYNC_REMOTE_PATH}" "$_spr" 2>/dev/null && [[ -f "$MAPFILE" ]]; then
+        local _spm; _spm=$(mktemp "$CONFIG_DIR/.sync_m.XXXXXX")
+        cp "$MAPFILE" "$_spm"
+        # Append remote entries whose nick is not in local (preserves peer additions)
+        while IFS= read -r _rl; do
+            [[ -z "$_rl" || "$_rl" == \#* ]] && continue
+            local _rn; _rn=$(printf '%s' "$_rl" | awk '{print $1}')
+            [[ -z "$_rn" ]] && continue
+            if ! awk -v n="$_rn" '$1==n{found=1;exit}END{exit !found}' "$_spm" 2>/dev/null; then
+                printf '%s\n' "$_rl" >> "$_spm"
+            fi
+        done < "$_spr"
+        # Dedup by host — local (first occurrence) wins; strips user@ for comparison
+        awk 'NF==0||/^[[:space:]]*#/{print;next}{h=$2;sub(/^[^@]*@/,"",h);if(!seen[h]++)print}' \
+            "$_spm" > "$MAPFILE"
+        rm -f "$_spm"
+    fi
+    rm -f "$_spr"
+
     if scp -q -o BatchMode=yes -o ConnectTimeout=5 \
             "$MAPFILE" "${SYNC_HOST}:${SYNC_REMOTE_PATH}" 2>/dev/null; then
         # Also push machine-paths.txt and favorites.txt alongside machines.txt
@@ -258,6 +281,13 @@ _sync_bg() {
     (( age < 30 )) && return
     local rdir; rdir=$(_sync_remote_dir)
     local local_ver="$CONFIG_DIR/.machines_version"
+    # Skip if local file was touched more recently than last sync (un-pushed local edit in progress)
+    if [[ -f "$MAPFILE" && -f "$stamp" ]]; then
+        local _mtime _stime
+        _mtime=$(stat -c %Y "$MAPFILE" 2>/dev/null || echo 0)
+        _stime=$(stat -c %Y "$stamp"   2>/dev/null || echo 0)
+        (( _mtime > _stime )) && return
+    fi
     (
         touch "$stamp" 2>/dev/null
         local tmp_ver; tmp_ver=$(mktemp)
@@ -265,24 +295,39 @@ _sync_bg() {
         if scp -q -o BatchMode=yes -o ConnectTimeout=5 \
                 "${SYNC_HOST}:${rdir}/.machines_version" "$tmp_ver" 2>/dev/null; then
             if ! diff -q "$tmp_ver" "$local_ver" &>/dev/null; then
-                # Version changed — pull both files and update local version
+                # Version changed — pull atomically to temp, then move into place + dedup
+                local _dl; _dl=$(mktemp "$CONFIG_DIR/.pull.XXXXXX")
                 if scp -q -o BatchMode=yes -o ConnectTimeout=5 \
-                        "${SYNC_HOST}:${SYNC_REMOTE_PATH}" "$MAPFILE" 2>/dev/null; then
+                        "${SYNC_HOST}:${SYNC_REMOTE_PATH}" "$_dl" 2>/dev/null; then
+                    mv "$_dl" "$MAPFILE"
+                    _dedup_mapfile "$MAPFILE"
+                    local _pdl; _pdl=$(mktemp "$CONFIG_DIR/.pull.XXXXXX")
                     scp -q -o BatchMode=yes -o ConnectTimeout=5 \
-                        "${SYNC_HOST}:${PATHS_SYNC_REMOTE_PATH}" "$PATHS_FILE" 2>/dev/null
+                        "${SYNC_HOST}:${PATHS_SYNC_REMOTE_PATH}" "$_pdl" 2>/dev/null \
+                        && mv "$_pdl" "$PATHS_FILE" || rm -f "$_pdl"
+                    local _fdl; _fdl=$(mktemp "$CONFIG_DIR/.pull.XXXXXX")
                     scp -q -o BatchMode=yes -o ConnectTimeout=5 \
-                        "${SYNC_HOST}:${FAVS_SYNC_REMOTE_PATH}" "$FAVS_FILE" 2>/dev/null
+                        "${SYNC_HOST}:${FAVS_SYNC_REMOTE_PATH}" "$_fdl" 2>/dev/null \
+                        && mv "$_fdl" "$FAVS_FILE" || rm -f "$_fdl"
                     cp "$tmp_ver" "$local_ver" 2>/dev/null
+                else
+                    rm -f "$_dl"
                 fi
             fi
         else
             # No version file yet — pull unconditionally (first sync or legacy server)
+            local _dl; _dl=$(mktemp "$CONFIG_DIR/.pull.XXXXXX")
             scp -q -o BatchMode=yes -o ConnectTimeout=5 \
-                "${SYNC_HOST}:${SYNC_REMOTE_PATH}" "$MAPFILE" 2>/dev/null
+                "${SYNC_HOST}:${SYNC_REMOTE_PATH}" "$_dl" 2>/dev/null \
+                && { mv "$_dl" "$MAPFILE"; _dedup_mapfile "$MAPFILE"; } || rm -f "$_dl"
+            local _pdl; _pdl=$(mktemp "$CONFIG_DIR/.pull.XXXXXX")
             scp -q -o BatchMode=yes -o ConnectTimeout=5 \
-                "${SYNC_HOST}:${PATHS_SYNC_REMOTE_PATH}" "$PATHS_FILE" 2>/dev/null
+                "${SYNC_HOST}:${PATHS_SYNC_REMOTE_PATH}" "$_pdl" 2>/dev/null \
+                && mv "$_pdl" "$PATHS_FILE" || rm -f "$_pdl"
+            local _fdl; _fdl=$(mktemp "$CONFIG_DIR/.pull.XXXXXX")
             scp -q -o BatchMode=yes -o ConnectTimeout=5 \
-                "${SYNC_HOST}:${FAVS_SYNC_REMOTE_PATH}" "$FAVS_FILE" 2>/dev/null
+                "${SYNC_HOST}:${FAVS_SYNC_REMOTE_PATH}" "$_fdl" 2>/dev/null \
+                && mv "$_fdl" "$FAVS_FILE" || rm -f "$_fdl"
         fi
         rm -f "$tmp_ver"
     ) &
@@ -465,6 +510,15 @@ _inplace_edit() {
     if "$@" > "$TF"; then mv "$TF" "$MAPFILE"; else rm -f "$TF"; return 1; fi
 }
 
+# Remove entries that share the same host (strips user@) — first occurrence wins
+_dedup_mapfile() {
+    local file="$1"
+    [[ -f "$file" ]] || return
+    local TF; TF=$(mktemp "$CONFIG_DIR/.dedup.XXXXXX")
+    awk 'NF==0||/^[[:space:]]*#/{print;next}{h=$2;sub(/^[^@]*@/,"",h);if(!seen[h]++)print}' \
+        "$file" > "$TF" && mv "$TF" "$file" || rm -f "$TF"
+}
+
 # Extract SSH port from DEVICE_SSH_OPTS (defaults to 22)
 _get_ssh_port() {
     local j p=22
@@ -612,8 +666,8 @@ if [[ -z "$1" ]]; then
     fi
 fi
 
-# Background pull — keeps fleet in sync without blocking the prompt
-_sync_bg
+# Background pull — skipped for interactive file-edit commands to avoid clobbering open editor
+case "$1" in --edit|--fav) ;; *) _sync_bg ;; esac
 
 # Background update check — notifies on next run if newer version found
 _check_update
@@ -1178,6 +1232,30 @@ case "$1" in
         if [[ -f "$MAPFILE" ]] && _nick_exists "$NICK"; then
             printf "Nickname '%s' already exists. Use --set to update it.\n" "$NICK"; exit 1
         fi
+        # Check for duplicate host (strip user@ for comparison so ati@IP == root@IP)
+        _add_host="${TARGET#*@}"
+        _existing_nick=""
+        [[ -f "$MAPFILE" ]] && _existing_nick=$(awk -v h="$_add_host" \
+            '{host=$2; sub(/^[^@]*@/,"",host); if(host==h){print $1;exit}}' "$MAPFILE")
+        # Also check remote fleet when sync is configured (catches peer additions)
+        if [[ -z "$_existing_nick" && -n "$SYNC_HOST" ]]; then
+            _add_tmp=$(mktemp "$CONFIG_DIR/.addchk.XXXXXX")
+            scp -q -o BatchMode=yes -o ConnectTimeout=3 \
+                "${SYNC_HOST}:${SYNC_REMOTE_PATH}" "$_add_tmp" 2>/dev/null \
+                && _existing_nick=$(awk -v h="$_add_host" \
+                    '{host=$2; sub(/^[^@]*@/,"",host); if(host==h){print $1;exit}}' "$_add_tmp")
+            rm -f "$_add_tmp"
+        fi
+        if [[ -n "$_existing_nick" ]]; then
+            if [[ -t 0 ]]; then
+                printf "This IP is already assigned to '%s'. SSH into it? [y/N] " "$_existing_nick"
+                read -r _add_resp
+                [[ "${_add_resp,,}" == "y" ]] && exec "$0" "$_existing_nick"
+            else
+                printf "IP '%s' is already assigned to '%s'.\n" "$TARGET" "$_existing_nick"
+            fi
+            exit 1
+        fi
         mkdir -p "$(dirname "$MAPFILE")"
         printf '%s %s %s\n' "$NICK" "$TARGET" "$TAGS" >> "$MAPFILE"
         printf "Added: %s → %s %s\n" "$NICK" "$TARGET" "$TAGS"
@@ -1191,6 +1269,13 @@ case "$1" in
         NICK="$2"; TARGET="$3"
         _nick_exists "$NICK" || {
             printf "Nickname '%s' not found. Use --add to add it.\n" "$NICK"; exit 1; }
+        # Block if another nick already owns this host (strip user@ for comparison)
+        _set_host="${TARGET#*@}"
+        _set_conflict=$(awk -v h="$_set_host" -v n="$NICK" \
+            '$1!=n{host=$2;sub(/^[^@]*@/,"",host);if(host==h){print $1;exit}}' "$MAPFILE")
+        if [[ -n "$_set_conflict" ]]; then
+            printf "IP '%s' is already assigned to '%s'.\n" "$TARGET" "$_set_conflict"; exit 1
+        fi
         _inplace_edit awk -v n="$NICK" -v t="$TARGET" \
             '$1 == n {$2 = t} {print}' "$MAPFILE"
         printf "Updated: %s → %s\n" "$NICK" "$TARGET"
@@ -1266,15 +1351,21 @@ case "$1" in
 
         _sync_rdir=$(_sync_remote_dir)
         # Pull remote → local; if remote has no file yet, push ours as the seed
+        local _sdl; _sdl=$(mktemp "$CONFIG_DIR/.pull.XXXXXX")
         if scp -q -o BatchMode=yes -o ConnectTimeout=10 \
-                "${SYNC_HOST}:${SYNC_REMOTE_PATH}" "$MAPFILE" 2>/dev/null; then
+                "${SYNC_HOST}:${SYNC_REMOTE_PATH}" "$_sdl" 2>/dev/null; then
+            mv "$_sdl" "$MAPFILE"; _dedup_mapfile "$MAPFILE"
             printf "  ${GREEN}pulled${RESET}   %s:%s\n" "$SYNC_HOST" "$SYNC_REMOTE_PATH"
+            local _spdl; _spdl=$(mktemp "$CONFIG_DIR/.pull.XXXXXX")
             scp -q -o BatchMode=yes -o ConnectTimeout=10 \
-                "${SYNC_HOST}:${PATHS_SYNC_REMOTE_PATH}" "$PATHS_FILE" 2>/dev/null \
-                && printf "  ${GREEN}pulled${RESET}   %s:%s\n" "$SYNC_HOST" "$PATHS_SYNC_REMOTE_PATH"
+                "${SYNC_HOST}:${PATHS_SYNC_REMOTE_PATH}" "$_spdl" 2>/dev/null \
+                && { mv "$_spdl" "$PATHS_FILE"; printf "  ${GREEN}pulled${RESET}   %s:%s\n" "$SYNC_HOST" "$PATHS_SYNC_REMOTE_PATH"; } \
+                || rm -f "$_spdl"
+            local _sfdl; _sfdl=$(mktemp "$CONFIG_DIR/.pull.XXXXXX")
             scp -q -o BatchMode=yes -o ConnectTimeout=10 \
-                "${SYNC_HOST}:${FAVS_SYNC_REMOTE_PATH}" "$FAVS_FILE" 2>/dev/null \
-                && printf "  ${GREEN}pulled${RESET}   %s:%s\n" "$SYNC_HOST" "$FAVS_SYNC_REMOTE_PATH"
+                "${SYNC_HOST}:${FAVS_SYNC_REMOTE_PATH}" "$_sfdl" 2>/dev/null \
+                && { mv "$_sfdl" "$FAVS_FILE"; printf "  ${GREEN}pulled${RESET}   %s:%s\n" "$SYNC_HOST" "$FAVS_SYNC_REMOTE_PATH"; } \
+                || rm -f "$_sfdl"
             # Grab the remote version file so bg-check knows we're current
             scp -q -o BatchMode=yes -o ConnectTimeout=5 \
                 "${SYNC_HOST}:${_sync_rdir}/.machines_version" \
@@ -1282,6 +1373,7 @@ case "$1" in
             touch "$CONFIG_DIR/.last_sync" 2>/dev/null
             printf "  ${DIM}next background check in 30s${RESET}\n"
         else
+            rm -f "$_sdl"
             # Try to push (seeds remote if it doesn't exist yet)
             if scp -q -o BatchMode=yes -o ConnectTimeout=10 \
                     "$MAPFILE" "${SYNC_HOST}:${SYNC_REMOTE_PATH}" 2>/dev/null; then
