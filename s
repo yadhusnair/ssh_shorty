@@ -216,6 +216,7 @@ _sync_push() {
     fi
     rm -f "$_spr"
 
+    _dedup_mapfile "$MAPFILE"
     if scp -q -o BatchMode=yes -o ConnectTimeout=5 \
             "$MAPFILE" "${SYNC_HOST}:${SYNC_REMOTE_PATH}" 2>/dev/null; then
         # Also push machine-paths.txt and favorites.txt alongside machines.txt
@@ -1375,6 +1376,7 @@ case "$1" in
         else
             rm -f "$_sdl"
             # Try to push (seeds remote if it doesn't exist yet)
+            _dedup_mapfile "$MAPFILE"
             if scp -q -o BatchMode=yes -o ConnectTimeout=10 \
                     "$MAPFILE" "${SYNC_HOST}:${SYNC_REMOTE_PATH}" 2>/dev/null; then
                 [[ -f "$PATHS_FILE" ]] && \
