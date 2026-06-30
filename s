@@ -1352,17 +1352,17 @@ case "$1" in
 
         _sync_rdir=$(_sync_remote_dir)
         # Pull remote → local; if remote has no file yet, push ours as the seed
-        local _sdl; _sdl=$(mktemp "$CONFIG_DIR/.pull.XXXXXX")
+        _sdl=$(mktemp "$CONFIG_DIR/.pull.XXXXXX")
         if scp -q -o BatchMode=yes -o ConnectTimeout=10 \
                 "${SYNC_HOST}:${SYNC_REMOTE_PATH}" "$_sdl" 2>/dev/null; then
             mv "$_sdl" "$MAPFILE"; _dedup_mapfile "$MAPFILE"
             printf "  ${GREEN}pulled${RESET}   %s:%s\n" "$SYNC_HOST" "$SYNC_REMOTE_PATH"
-            local _spdl; _spdl=$(mktemp "$CONFIG_DIR/.pull.XXXXXX")
+            _spdl=$(mktemp "$CONFIG_DIR/.pull.XXXXXX")
             scp -q -o BatchMode=yes -o ConnectTimeout=10 \
                 "${SYNC_HOST}:${PATHS_SYNC_REMOTE_PATH}" "$_spdl" 2>/dev/null \
                 && { mv "$_spdl" "$PATHS_FILE"; printf "  ${GREEN}pulled${RESET}   %s:%s\n" "$SYNC_HOST" "$PATHS_SYNC_REMOTE_PATH"; } \
                 || rm -f "$_spdl"
-            local _sfdl; _sfdl=$(mktemp "$CONFIG_DIR/.pull.XXXXXX")
+            _sfdl=$(mktemp "$CONFIG_DIR/.pull.XXXXXX")
             scp -q -o BatchMode=yes -o ConnectTimeout=10 \
                 "${SYNC_HOST}:${FAVS_SYNC_REMOTE_PATH}" "$_sfdl" 2>/dev/null \
                 && { mv "$_sfdl" "$FAVS_FILE"; printf "  ${GREEN}pulled${RESET}   %s:%s\n" "$SYNC_HOST" "$FAVS_SYNC_REMOTE_PATH"; } \
