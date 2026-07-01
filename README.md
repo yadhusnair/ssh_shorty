@@ -140,6 +140,28 @@ Run `s --sync` once after updating `SYNC_HOST` in your config. That first sync c
 
 ## Access control
 
+### Registering your SSH key
+
+Before requesting access to any device, register your public key with the fleet. This adds you to the user registry the admin uses to grant access:
+
+```bash
+s --register
+```
+
+If you have a single public key in `~/.ssh/`, it is detected and submitted automatically. If you have multiple keys, you are shown a numbered list to pick from. You can also supply a key directly:
+
+```bash
+s --register "ssh-ed25519 AAAA..."
+```
+
+The key is sent to `SYNC_HOST` and queued for the admin. When the admin next runs `s --sync`, your key is merged into the user registry and you will appear in `s-admin --provide-access <TAB>` completion. The admin then grants you access to specific devices:
+
+```bash
+s-admin --provide-access ujjawal fm85
+```
+
+### Connecting without access
+
 When you try to connect to a device and your SSH key is not authorized, `s` detects it before falling through to a password prompt and offers to request access from the fleet admin:
 
 ```
@@ -403,7 +425,9 @@ s --sync                             # manual pull/push with sync server
 ### SSH keys
 
 ```bash
-s --keydeploy fm85                   # copy your public key to fm85
+s --register                         # submit your public key for admin review (auto-detects ~/.ssh/id_*.pub)
+s --register "ssh-ed25519 AAAA..."   # supply key directly
+s --keydeploy fm85                   # copy your public key to fm85 (requires existing access)
 s --keydeploy @lifter                # copy to all #lifter devices (serial)
 ```
 
