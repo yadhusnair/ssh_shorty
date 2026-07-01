@@ -625,7 +625,7 @@ _check_pending_requests() {
         count=$(ssh -q -o BatchMode=yes -o ConnectTimeout=3 "$SYNC_HOST" \
             "ls ~/${rdir}/pending_requests/*.req 2>/dev/null | wc -l" 2>/dev/null)
         [[ -n "$count" && "$count" -gt 0 ]] && \
-            printf "${YELLOW}⚠ %d pending access request(s) — run: s --pending-requests${RESET}\n" \
+            printf "${YELLOW}⚠ %d pending access request(s) — run: s-admin --pending-requests${RESET}\n" \
                 "$count" >&2
     ) </dev/null &
     disown $!
