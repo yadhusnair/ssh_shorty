@@ -1,7 +1,7 @@
 #!/bin/bash
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 
-VERSION="20260711"
+VERSION="20260712"
 REPO_RAW="https://raw.githubusercontent.com/yadhusnair/ssh_shorty/main"
 
 MAPFILE="$HOME/.config/ssh_shorty/machines.txt"
@@ -230,6 +230,29 @@ _block_header() {
     done
     printf '\n'
     _show_cursor
+}
+
+_block_spin_start() {
+    local msg="$1"
+    ( exec > /dev/tty 2>/dev/null
+      local w=20 i=0 j pos
+      while true; do
+          pos=$(( i % (w * 2) ))
+          [[ $pos -ge $w ]] && pos=$(( w * 2 - 1 - pos ))
+          _clear_line
+          printf "${GREEN}[${RESET}"
+          for (( j=0; j<w; j++ )); do
+              if (( j == pos )); then printf "${BOLD}${GREEN}█${RESET}"
+              elif (( j == pos - 1 || j == pos + 1 )); then printf "${GREEN}▓${RESET}"
+              else printf "${DIM}░${RESET}"
+              fi
+          done
+          printf "${GREEN}]${RESET} ${DIM}%s${RESET}" "$msg"
+          i=$(( i + 1 ))
+          sleep 0.05
+      done
+    ) &
+    printf '%d' $!
 }
 
 trap '[[ $_CURSOR_HIDDEN -eq 1 ]] && printf '\''\033[?25h'\''' EXIT INT TERM
@@ -989,10 +1012,19 @@ case "$1" in
             _sysinfo_host="${_sysinfo_target#*@}"
             _throttle 15
             ( trap - EXIT
-              nc -z -w3 "$_sysinfo_host" "$_sysinfo_port" &>/dev/null || { echo offline > "$tmpdir/$safe"; exit 0; }
-              ssh "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" -o BatchMode=yes -o ConnectTimeout=3 "$_sysinfo_target" \
-                "awk '{printf \"%s \",\$1}' /proc/loadavg 2>/dev/null; free | awk '/Mem:/ {printf \"%d%% \", int(\$3/\$2 * 100)}' 2>/dev/null; df -h / | awk 'NR==2 {print \$5}' 2>/dev/null" \
-                2>/dev/null > "$tmpdir/${safe}_sys" && echo online || echo offline ) > "$tmpdir/$safe" &
+              mkdir -p "$tmpdir" 2>/dev/null
+              if ! nc -z -w3 "$_sysinfo_host" "$_sysinfo_port" &>/dev/null; then
+                  echo offline > "$tmpdir/$safe" 2>/dev/null
+              else
+                  ssh "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" -o BatchMode=yes -o ConnectTimeout=3 "$_sysinfo_target" \
+                    "awk '{printf \"%s \",\$1}' /proc/loadavg 2>/dev/null; free | awk '/Mem:/ {printf \"%d%% \", int(\$3/\$2 * 100)}' 2>/dev/null; df -h / | awk 'NR==2 {print \$5}' 2>/dev/null" \
+                    2>/dev/null > "$tmpdir/${safe}_sys"
+                  if [[ -s "$tmpdir/${safe}_sys" ]]; then
+                      echo online > "$tmpdir/$safe" 2>/dev/null
+                  else
+                      echo offline > "$tmpdir/$safe" 2>/dev/null
+                  fi
+              fi ) &
         done
         wait
         [[ -n "$spinner_pid" ]] && _spinner_stop "$spinner_pid"
@@ -1062,8 +1094,12 @@ case "$1" in
                 _watch_host="${_watch_target#*@}"
                 _watch_port=$(_get_ssh_port)
                 _throttle 15
-                ( nc -z -w3 "$_watch_host" "$_watch_port" &>/dev/null && echo online || echo offline ) \
-                    > "$watch_tmp/$safe" &
+                ( mkdir -p "$watch_tmp" 2>/dev/null
+                  if nc -z -w3 "$_watch_host" "$_watch_port" &>/dev/null; then
+                      echo online > "$watch_tmp/$safe" 2>/dev/null
+                  else
+                      echo offline > "$watch_tmp/$safe" 2>/dev/null
+                  fi ) &
             done
             wait
 
@@ -1168,7 +1204,13 @@ case "$1" in
                   fi
                 ) &
             else
-                ( trap - EXIT; nc -z -w3 "$host" "$port" &>/dev/null && echo online || echo offline ) > "$tmpdir/$safe" &
+                ( trap - EXIT
+                  mkdir -p "$tmpdir" 2>/dev/null
+                  if nc -z -w3 "$host" "$port" &>/dev/null; then
+                      echo online > "$tmpdir/$safe" 2>/dev/null
+                  else
+                      echo offline > "$tmpdir/$safe" 2>/dev/null
+                  fi ) &
             fi
         done
         wait
@@ -1430,8 +1472,10 @@ case "$1" in
         TARGET=$(_apply_mac_resolution "$NICK" "$TARGET")
         ssh_cmd="ssh"
         for o in "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}"; do ssh_cmd+=" $o"; done
-        _anim_enabled && _neon_trace "Downloading  ${NICK}:${REMOTE_PATH}  →  ${LOCAL_DEST}"
+        _blk_pid=""
+        _anim_enabled && _blk_pid=$(_block_spin_start "Downloading  ${NICK}:${REMOTE_PATH}  →  ${LOCAL_DEST}")
         rsync -avP -e "$ssh_cmd" "$TARGET:$REMOTE_PATH" "$LOCAL_DEST"
+        [[ -n "$_blk_pid" ]] && _spinner_stop "$_blk_pid"
         ;;
 
     --view)
@@ -1515,8 +1559,10 @@ case "$1" in
         TARGET=$(_apply_mac_resolution "$NICK" "$TARGET")
         ssh_cmd="ssh"
         for o in "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}"; do ssh_cmd+=" $o"; done
-        _anim_enabled && _neon_trace "Uploading  ${LOCAL_PATH}  →  ${NICK}:${REMOTE_PATH}"
+        _blk_pid=""
+        _anim_enabled && _blk_pid=$(_block_spin_start "Uploading  ${LOCAL_PATH}  →  ${NICK}:${REMOTE_PATH}")
         rsync -avP -e "$ssh_cmd" "$LOCAL_PATH" "$TARGET:$REMOTE_PATH"
+        [[ -n "$_blk_pid" ]] && _spinner_stop "$_blk_pid"
         ;;
 
     --add|-a)
