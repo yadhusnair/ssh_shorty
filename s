@@ -1,7 +1,7 @@
 #!/bin/bash
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 
-VERSION="20260705"
+VERSION="20260706"
 REPO_RAW="https://raw.githubusercontent.com/yadhusnair/ssh_shorty/main"
 
 MAPFILE="$HOME/.config/ssh_shorty/machines.txt"
@@ -630,17 +630,16 @@ _log_remote_connection() {
     local nick="$1" target="$2"
     local user; user=$(_current_user)
     [[ -z "$user" ]] && return 0
-    # Sanitise — only safe chars allowed in the remote log entry
     [[ "$user" =~ ^[a-zA-Z0-9._-]+$ ]] || user="unknown"
     [[ "$nick" =~ ^[a-zA-Z0-9._-]+$ ]] || nick="unknown"
     local ts; ts=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+    # Values expanded locally; single-quoted on the remote side so the shell
+    # never re-interprets them. >> is outside the quotes — a real redirect.
+    local _cmd="mkdir -p ~/.ssh_shorty 2>/dev/null && printf '%s %s %s\n' '${ts}' '${user}' '${nick}' >> ~/.ssh_shorty/userlog.txt"
     (
         ssh -q -o BatchMode=yes -o ConnectTimeout=5 \
             "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" "$target" \
-            "mkdir -p ~/.ssh_shorty 2>/dev/null
-             flock -w 2 ~/.ssh_shorty/.userlog.lock \
-               sh -c 'printf \"%s %s %s\\n\" \"$ts\" \"$user\" \"$nick\" \
-               >> ~/.ssh_shorty/userlog.txt' 2>/dev/null" 2>/dev/null
+            "$_cmd" 2>/dev/null
     ) </dev/null >/dev/null 2>&1 &
     disown $!
 }
