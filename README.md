@@ -160,6 +160,12 @@ The key is sent to `SYNC_HOST` and queued for the admin. When the admin next run
 s-admin --provide-access ujjawal fm85
 ```
 
+**Changing your key later** — `s --register` only works for first-time registration. If you need to update your key after it has already been synced into the registry, ask the admin to run:
+
+```bash
+s-admin --edit-user ujjawal "ssh-ed25519 AAAA..."
+```
+
 ### Connecting without access
 
 When you try to connect to a device and your SSH key is not authorized, `s` detects it before falling through to a password prompt and offers to request access from the fleet admin:
