@@ -1,7 +1,7 @@
 #!/bin/bash
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 
-VERSION="20260706"
+VERSION="20260707"
 REPO_RAW="https://raw.githubusercontent.com/yadhusnair/ssh_shorty/main"
 
 MAPFILE="$HOME/.config/ssh_shorty/machines.txt"
@@ -722,6 +722,8 @@ _do_update() {
     fi
     printf '%s %s\n' "$(date +%s)" "$remote_ver" > "$UPDATE_CACHE"
     printf "\n${GREEN}✓ Updated to v%s${RESET} — open a new shell tab to activate new completions\n" "$remote_ver"
+    # Exit here so bash never reads ;; or esac from the replaced file.
+    exit 0
 }
 
 # Extract SSH port from DEVICE_SSH_OPTS (defaults to 22)
