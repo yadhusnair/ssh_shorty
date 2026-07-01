@@ -1,7 +1,7 @@
 #!/bin/bash
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 
-VERSION="20260703"
+VERSION="20260704"
 REPO_RAW="https://raw.githubusercontent.com/yadhusnair/ssh_shorty/main"
 
 MAPFILE="$HOME/.config/ssh_shorty/machines.txt"
@@ -185,6 +185,7 @@ usage() {
     printf "  s --sync                                    pull/push fleet from SYNC_HOST\n"
     printf "  s --ping <nick|@group|prefix|--all>         check reachability\n"
     printf "  s --poll <nickname> [--timeout <sec>]       wait until online then connect\n"
+    printf "  s --register [pubkey]                       submit your SSH public key for admin review\n"
     printf "  s --keydeploy <nick|@group>                 deploy SSH key\n"
     printf "  s --export-ssh-config                       write machines.txt → ~/.ssh/config\n"
     printf "  s --import                                  import from ~/.ssh/config\n"
@@ -554,6 +555,65 @@ _lookup_pubkey() {
     local username="$1"
     [[ -f "$USERS_FILE" ]] || { printf ""; return; }
     awk -v u="$username" '$1==u{$1="";sub(/^[[:space:]]+/,"");print;exit}' "$USERS_FILE"
+}
+
+# Submit this user's SSH public key for admin review.
+# Writes to SYNC_HOST:~/validation/pending_keys/USERNAME.key so the admin
+# picks it up on the next s --sync and can then run --provide-access.
+_register_key() {
+    local key="$1"
+
+    # Auto-detect if no key provided
+    if [[ -z "$key" ]]; then
+        local _found=()
+        for _f in "$HOME/.ssh/"id_*.pub "$HOME/.ssh/"*.pub; do
+            [[ -f "$_f" ]] && _found+=("$_f")
+        done
+        if [[ ${#_found[@]} -eq 1 ]]; then
+            key=$(cat "${_found[0]}")
+            printf "Using key: %s\n" "${_found[0]}"
+        elif [[ ${#_found[@]} -gt 1 ]]; then
+            printf "Multiple public keys found:\n"
+            local i=1
+            for _f in "${_found[@]}"; do
+                printf "  %d) %s\n" "$i" "$_f"
+                (( i++ ))
+            done
+            printf "Which? [1-%d] " "${#_found[@]}"
+            read -r _pick
+            _pick=$(( _pick - 1 ))
+            [[ $_pick -lt 0 || $_pick -ge ${#_found[@]} ]] && { printf "Invalid choice.\n"; return 1; }
+            key=$(cat "${_found[$_pick]}")
+        else
+            printf "No public key found in ~/.ssh/. Paste your public key: "
+            read -r key
+        fi
+    fi
+
+    [[ -z "$key" ]] && { printf "No key provided.\n"; return 1; }
+    _validate_pubkey "$key" || { printf "Invalid SSH public key.\n"; return 1; }
+
+    local rdir; rdir=$(_sync_remote_dir)
+    local req_file="${SHORTY_USER}.key"
+    local payload; payload=$(printf '%s %s\n' "$SHORTY_USER" "$key")
+
+    if [[ -n "$SYNC_HOST" ]]; then
+        ssh -q -o BatchMode=yes -o ConnectTimeout=5 \
+            "$SYNC_HOST" "mkdir -p ~/${rdir}/pending_keys" 2>/dev/null
+        if printf '%s\n' "$payload" | \
+                ssh -q -o BatchMode=yes -o ConnectTimeout=5 \
+                "$SYNC_HOST" "cat > ~/${rdir}/pending_keys/${req_file}" 2>/dev/null; then
+            printf "Key submitted. The admin will be notified on their next sync.\n"
+        else
+            printf "${YELLOW}Could not reach sync server.${RESET} Key saved locally.\n"
+            mkdir -p "$CONFIG_DIR/pending_keys"
+            printf '%s\n' "$payload" > "$CONFIG_DIR/pending_keys/${req_file}"
+        fi
+    else
+        printf "${YELLOW}No SYNC_HOST configured.${RESET} Key saved locally only.\n"
+        mkdir -p "$CONFIG_DIR/pending_keys"
+        printf '%s\n' "$payload" > "$CONFIG_DIR/pending_keys/${req_file}"
+    fi
 }
 
 # Push users.txt to SYNC_HOST (silent on failure)
@@ -1580,6 +1640,36 @@ case "$1" in
                 printf "  ${DIM}fleet server unreachable — using local copy${RESET}\n"
             fi
         fi
+
+        # Process any pending key registrations submitted by users via s --register
+        _pk_list=$(ssh -q -o BatchMode=yes -o ConnectTimeout=5 "$SYNC_HOST" \
+            "ls ~/${_sync_rdir}/pending_keys/*.key 2>/dev/null" 2>/dev/null)
+        if [[ -n "$_pk_list" ]]; then
+            _pk_any=0
+            while IFS= read -r _pkpath; do
+                [[ -z "$_pkpath" ]] && continue
+                _pkentry=$(ssh -q -o BatchMode=yes -o ConnectTimeout=5 "$SYNC_HOST" \
+                    "cat '$_pkpath'" 2>/dev/null)
+                [[ -z "$_pkentry" ]] && continue
+                _pkuser=$(printf '%s' "$_pkentry" | awk '{print $1}')
+                [[ -z "$_pkuser" ]] && continue
+                if grep -qE "^${_pkuser}[[:space:]]" "$USERS_FILE" 2>/dev/null; then
+                    printf "  ${YELLOW}skip${RESET}     key for '${_pkuser}' already in users.txt\n"
+                else
+                    touch "$USERS_FILE" 2>/dev/null
+                    # Ensure file ends with newline before appending
+                    [[ -s "$USERS_FILE" ]] && \
+                        [[ "$(tail -c 1 "$USERS_FILE" | wc -l)" -eq 0 ]] && \
+                        printf '\n' >> "$USERS_FILE"
+                    printf '%s\n' "$_pkentry" >> "$USERS_FILE"
+                    printf "  ${GREEN}imported${RESET} key for '${_pkuser}'\n"
+                    _pk_any=1
+                fi
+                ssh -q -o BatchMode=yes -o ConnectTimeout=5 "$SYNC_HOST" \
+                    "rm -f '$_pkpath'" 2>/dev/null
+            done <<< "$_pk_list"
+            [[ $_pk_any -eq 1 ]] && _sync_push_users
+        fi
         ;;
 
     --ping|-p)
@@ -1691,6 +1781,10 @@ case "$1" in
                 exit 1
             fi
         done
+        ;;
+
+    --register)
+        _register_key "$2"
         ;;
 
     --keydeploy)

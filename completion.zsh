@@ -52,6 +52,7 @@ _ssh_shorty() {
     '-m:tmux synchronized panes'
     '--close:close ControlMaster socket'
     '--export-ssh-config:write machines.txt to ~/.ssh/config'
+    '--register:submit your SSH public key for admin review'
     '--keydeploy:deploy SSH key via ssh-copy-id'
     '--last:show last n connections'
     '--import:import from ~/.ssh/config'
