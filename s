@@ -1,7 +1,7 @@
 #!/bin/bash
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 
-VERSION="20260702"
+VERSION="20260703"
 REPO_RAW="https://raw.githubusercontent.com/yadhusnair/ssh_shorty/main"
 
 MAPFILE="$HOME/.config/ssh_shorty/machines.txt"
@@ -629,6 +629,40 @@ _check_pending_requests() {
                 "$count" >&2
     ) </dev/null &
     disown $!
+}
+
+# Self-update logic — defined as a function so bash reads the entire body into
+# memory before install.sh replaces the running script on disk.
+_do_update() {
+    local remote_ver="$1"
+    local _upd_dir _tarball _repo_dir _repo_url
+    _upd_dir=$(mktemp -d)
+    trap 'rm -rf "$_upd_dir"' EXIT
+    _tarball="$_upd_dir/repo.tar.gz"
+    _repo_url="https://github.com/yadhusnair/ssh_shorty/archive/refs/heads/main.tar.gz"
+    printf "Downloading v%s...\n" "$remote_ver"
+    if ! curl -fsSL --max-time 60 "$_repo_url" -o "$_tarball"; then
+        printf "Download failed.\n"; return 1
+    fi
+    if ! tar -xzf "$_tarball" -C "$_upd_dir" 2>/dev/null; then
+        printf "Extract failed.\n"; return 1
+    fi
+    _repo_dir=$(find "$_upd_dir" -maxdepth 1 -type d -name 'ssh_shorty-*' | head -1)
+    if [[ -z "$_repo_dir" || ! -f "$_repo_dir/install.sh" ]]; then
+        printf "Unexpected archive layout — aborted.\n"; return 1
+    fi
+    # install.sh replaces this running script on disk — all code after this point
+    # must already be in memory (i.e. inside this function body).
+    bash "$_repo_dir/install.sh" --update
+    # Sync favorites from team server if configured
+    if [[ -n "$SYNC_HOST" ]]; then
+        scp -q -o BatchMode=yes -o ConnectTimeout=5 \
+            "${SYNC_HOST}:${FAVS_SYNC_REMOTE_PATH}" "$FAVS_FILE" 2>/dev/null \
+            && printf "  ${GREEN}✓${RESET} favorites synced from %s\n" "$SYNC_HOST" \
+            || true
+    fi
+    printf '%s %s\n' "$(date +%s)" "$remote_ver" > "$UPDATE_CACHE"
+    printf "\n${GREEN}✓ Updated to v%s${RESET} — open a new shell tab to activate new completions\n" "$remote_ver"
 }
 
 # Extract SSH port from DEVICE_SSH_OPTS (defaults to 22)
@@ -1849,38 +1883,7 @@ case "$1" in
         read -r _upd_resp
         [[ "$_upd_resp" =~ ^[Nn] ]] && { printf "Aborted.\n"; exit 0; }
 
-        # Download the full repo tarball and run install.sh --update
-        # This ensures install.sh itself and all files stay in sync.
-        # install.sh --update only touches the script + completions — never user data.
-        printf "Downloading v%s...\n" "$remote_ver"
-        _upd_dir=$(mktemp -d)
-        trap 'rm -rf "$_upd_dir"' EXIT
-
-        _tarball="$_upd_dir/repo.tar.gz"
-        _repo_url="https://github.com/yadhusnair/ssh_shorty/archive/refs/heads/main.tar.gz"
-        if ! curl -fsSL --max-time 60 "$_repo_url" -o "$_tarball"; then
-            printf "Download failed.\n"; exit 1
-        fi
-        if ! tar -xzf "$_tarball" -C "$_upd_dir" 2>/dev/null; then
-            printf "Extract failed.\n"; exit 1
-        fi
-        _repo_dir=$(find "$_upd_dir" -maxdepth 1 -type d -name 'ssh_shorty-*' | head -1)
-        if [[ -z "$_repo_dir" || ! -f "$_repo_dir/install.sh" ]]; then
-            printf "Unexpected archive layout — aborted.\n"; exit 1
-        fi
-
-        bash "$_repo_dir/install.sh" --update
-
-        # Sync favorites from team server if configured
-        if [[ -n "$SYNC_HOST" ]]; then
-            scp -q -o BatchMode=yes -o ConnectTimeout=5 \
-                "${SYNC_HOST}:${FAVS_SYNC_REMOTE_PATH}" "$FAVS_FILE" 2>/dev/null \
-                && printf "  ${GREEN}✓${RESET} favorites synced from %s\n" "$SYNC_HOST" \
-                || true
-        fi
-
-        printf '%s %s\n' "$(date +%s)" "$remote_ver" > "$UPDATE_CACHE"
-        printf "\n${GREEN}✓ Updated to v%s${RESET} — open a new shell tab to activate new completions\n" "$remote_ver"
+        _do_update "$remote_ver"
         ;;
 
     --help|-h)

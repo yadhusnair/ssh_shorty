@@ -72,7 +72,7 @@ curl -fsSL https://raw.githubusercontent.com/yadhusnair/ssh_shorty/main/s -o ~/.
 **After that, updates are automatic.** Every time you run `s`, it checks for a new version in the background (once per day, no delay). When one is found you'll see:
 
 ```
-  ↑ update available: 20260625 → 20260701   run: s --update
+  ↑ update available: 20260625 → 20260703   run: s --update
 ```
 
 Run `s --update` to apply it — no git or repo clone needed. It updates the `s` script **and** both completion files (`completion.bash`, `completion.zsh`), then clears the zsh cache. Open a new shell tab after updating to activate the new completions.
@@ -103,7 +103,7 @@ echo 'SYNC_HOST=ati@192.168.6.12' >> ~/.config/ssh_shorty/config
 s --sync
 ```
 
-- If the server has no `machines.txt` yet → your local copy is pushed as the fleet seed.
+- If the server has no `machines.txt` yet → your local copy is pushed as the fleet seed. The remote directory is created automatically.
 - If the server already has one → it is pulled to your machine.
 
 ### Day-to-day behaviour
@@ -116,9 +116,108 @@ s --sync
 | Any `s` command | Background pull fires if last sync was >10 min ago (never blocks your prompt) |
 | `s --sync` | Manual pull/push |
 
+### Duplicate IP detection
+
+Adding a device with an IP that is already registered is blocked:
+
+```
+$ s --add newbot ati@192.168.100.85 #fm
+IP '192.168.100.85' is already assigned to 'fm85'.
+Connect to it?  [y/N]
+```
+
+If you confirm, `s` connects to `fm85` directly. The duplicate is never written.
+
 ### No access to the sync server?
 
 If a team member cannot SSH to the sync server everything still works — writes are saved locally and push failures are silent. The script never errors out due to sync issues.
+
+### Changing sync servers
+
+Run `s --sync` once after updating `SYNC_HOST` in your config. That first sync creates the remote directory and seeds it with your current fleet. All subsequent background syncs work from that point forward.
+
+---
+
+## Access control
+
+When you try to connect to a device and your SSH key is not authorized, `s` detects it before falling through to a password prompt and offers to request access from the fleet admin:
+
+```
+$ s cpval
+Connecting to cpval  →  ati@192.168.100.120
+
+No key access to 'cpval'.
+Request access from admin? [y/N]
+```
+
+If you answer `y`, a small request file is written to the sync server (`SYNC_HOST`) which the admin will be notified about.
+
+**How detection works** — a `BatchMode=yes` pre-check runs `true` on the device before the real connection. This fails immediately with "Permission denied" if key auth is rejected, regardless of whether the device also allows password auth. On success (key auth valid), it seeds the ControlMaster socket so the real connect below is near-instant with no second handshake.
+
+**ControlMaster caveat** — if you have an active multiplexed socket from a previous session (e.g. you were previously authorized), `s` will reconnect over that socket even after key removal. Close it first:
+
+```bash
+s --close cpval     # or: s --close --all
+```
+
+Then retry — the access-denied prompt will appear as expected.
+
+### Login tracking
+
+Every successful connection is logged transparently in the background. An entry is appended to `~/.ssh_shorty/userlog.txt` on the remote device (fire-and-forget via the ControlMaster socket, no latency impact):
+
+```
+2026-07-03T10:15:42  yadhu  fm85
+```
+
+The admin can view logs per device: `s-admin --user-log fm85` (see admin tool below).
+
+---
+
+## Admin tool
+
+An admin tool (`s-admin`) is available separately for managing the user registry and granting access. It is **not part of the public installer** — admins share it directly.
+
+### User registry
+
+Users and their SSH public keys are stored in `~/.config/ssh_shorty/users.txt` (synced to the fleet via `SYNC_HOST`). The format is `username ssh-ed25519 AAAA... comment`.
+
+```bash
+s-admin --add-user alice "ssh-ed25519 AAAA... alice@laptop"
+s-admin --edit-user alice "ssh-ed25519 AAAB... alice@new-laptop"
+s-admin --remove-user alice
+s-admin --list-users
+```
+
+### Granting access
+
+```bash
+s-admin --provide-access alice fm85
+```
+
+Appends Alice's public key (from the registry) to `fm85`'s `~/.ssh/authorized_keys`. Idempotent — safe to run again if the key is already present. Also clears Alice's pending access request if one exists.
+
+Key delivery is done securely: the key is base64-encoded locally and decoded on the remote over the SSH pipe — no shell interpolation of key material.
+
+### Pending access requests
+
+```bash
+s-admin --pending-requests
+```
+
+Lists all users waiting for access, pulled from the sync server. A notification is shown at login if there are pending requests.
+
+### Login audit
+
+```bash
+s-admin --user-log fm85
+```
+
+SSHes into `fm85` and prints `~/.ssh_shorty/userlog.txt` — a chronological record of who connected and when.
+
+### Admin differentiation
+
+There is currently no formal role enforcement — whoever runs the admin installer gets `s-admin`. The implicit gate is SSH key access: `--provide-access` and `--pending-requests` require SSH access to `SYNC_HOST` or the target device, so they naturally fail for unauthorized users.
 
 ---
 
@@ -289,6 +388,7 @@ s --list fm                          # prefix filter
 s --list @fm                         # group filter
 s --add mydevice ati@10.0.0.5 #fm    # add (with optional tags)
 s --set mydevice ati@10.0.0.9        # update IP or user
+s --rename mydevice newname          # rename a device's nickname
 s --remove mydevice                  # remove
 s --edit                             # open machines.txt in $EDITOR
 s --ping fm85                        # single reachability check
@@ -351,6 +451,7 @@ s -d fm85:<TAB>                → remote paths on fm85
 s --fav --remove <TAB>         → saved favorite aliases
 s --status <TAB>               → @groups
 s --set <TAB>                  → nicknames
+s --rename <TAB>               → nicknames
 s --poll <TAB>                 → nicknames
 s --tail <TAB>                 → nicknames
 s --tunnel <TAB>               → nicknames
