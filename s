@@ -1,7 +1,7 @@
 #!/bin/bash
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 
-VERSION="20260701"
+VERSION="20260702"
 REPO_RAW="https://raw.githubusercontent.com/yadhusnair/ssh_shorty/main"
 
 MAPFILE="$HOME/.config/ssh_shorty/machines.txt"
@@ -21,6 +21,14 @@ SYNC_REMOTE_PATH="validation/machines.txt"
 # Derived — always sits next to machines.txt on the remote
 PATHS_SYNC_REMOTE_PATH="${SYNC_REMOTE_PATH%/*}/machine-paths.txt"
 FAVS_SYNC_REMOTE_PATH="${SYNC_REMOTE_PATH%/*}/favorites.txt"
+USERS_SYNC_REMOTE_PATH="${SYNC_REMOTE_PATH%/*}/users.txt"
+
+# User identity for fleet logs — set SHORTY_USER in config, defaults to $USER
+SHORTY_USER="${SHORTY_USER:-$USER}"
+
+# Local paths for user registry and access-request queue
+USERS_FILE="$CONFIG_DIR/users.txt"
+PENDING_REQ_DIR="$CONFIG_DIR/pending_requests"
 
 # Colors
 if [[ -t 1 && -z "${NO_COLOR-}" ]]; then
@@ -175,6 +183,13 @@ usage() {
     printf "  s --tag <nickname> <tag>                    add a tag to a device (# auto-added)\n"
     printf "  s --untag <nickname> <tag>                  remove a tag from a device\n"
     printf "  s --sync                                    pull/push fleet from SYNC_HOST\n"
+    printf "  s --add-user <name> <pubkey>                register a user with their SSH key\n"
+    printf "  s --edit-user <name> <pubkey>               update a user's SSH key\n"
+    printf "  s --remove-user <name>                      remove a user\n"
+    printf "  s --list-users                              list all registered users\n"
+    printf "  s --user-log <nick>                         show login history for a device\n"
+    printf "  s --provide-access <user> <device>          grant a user SSH access to a device\n"
+    printf "  s --pending-requests                        list pending access requests (admin)\n"
     printf "  s --ping <nick|@group|prefix|--all>         check reachability\n"
     printf "  s --poll <nickname> [--timeout <sec>]       wait until online then connect\n"
     printf "  s --keydeploy <nick|@group>                 deploy SSH key\n"
@@ -227,6 +242,9 @@ _sync_push() {
         [[ -f "$FAVS_FILE" ]] && \
             scp -q -o BatchMode=yes -o ConnectTimeout=5 \
                 "$FAVS_FILE" "${SYNC_HOST}:${FAVS_SYNC_REMOTE_PATH}" 2>/dev/null
+        [[ -f "$USERS_FILE" ]] && \
+            scp -q -o BatchMode=yes -o ConnectTimeout=5 \
+                "$USERS_FILE" "${SYNC_HOST}:${USERS_SYNC_REMOTE_PATH}" 2>/dev/null
         # Bump version file so all clients know to pull within 30s
         local ver; ver=$(date +%s)
         printf '%s\n' "$ver" | ssh -q -o BatchMode=yes -o ConnectTimeout=5 \
@@ -311,6 +329,10 @@ _sync_bg() {
                     scp -q -o BatchMode=yes -o ConnectTimeout=5 \
                         "${SYNC_HOST}:${FAVS_SYNC_REMOTE_PATH}" "$_fdl" 2>/dev/null \
                         && mv "$_fdl" "$FAVS_FILE" || rm -f "$_fdl"
+                    local _udl; _udl=$(mktemp "$CONFIG_DIR/.pull.XXXXXX")
+                    scp -q -o BatchMode=yes -o ConnectTimeout=5 \
+                        "${SYNC_HOST}:${USERS_SYNC_REMOTE_PATH}" "$_udl" 2>/dev/null \
+                        && mv "$_udl" "$USERS_FILE" || rm -f "$_udl"
                     cp "$tmp_ver" "$local_ver" 2>/dev/null
                 else
                     rm -f "$_dl"
@@ -330,6 +352,10 @@ _sync_bg() {
             scp -q -o BatchMode=yes -o ConnectTimeout=5 \
                 "${SYNC_HOST}:${FAVS_SYNC_REMOTE_PATH}" "$_fdl" 2>/dev/null \
                 && mv "$_fdl" "$FAVS_FILE" || rm -f "$_fdl"
+            local _udl; _udl=$(mktemp "$CONFIG_DIR/.pull.XXXXXX")
+            scp -q -o BatchMode=yes -o ConnectTimeout=5 \
+                "${SYNC_HOST}:${USERS_SYNC_REMOTE_PATH}" "$_udl" 2>/dev/null \
+                && mv "$_udl" "$USERS_FILE" || rm -f "$_udl"
         fi
         rm -f "$tmp_ver"
     ) &
@@ -521,6 +547,97 @@ _dedup_mapfile() {
         "$file" > "$TF" && mv "$TF" "$file" || rm -f "$TF"
 }
 
+# ── User tracking & access control helpers ────────────────────────────────────
+
+_current_user() { printf '%s' "$SHORTY_USER"; }
+
+# Validate an SSH public key with ssh-keygen; returns 0 if valid
+_validate_pubkey() {
+    ssh-keygen -l -f <(printf '%s\n' "$1") >/dev/null 2>&1
+}
+
+# Look up a user's pubkey from users.txt (returns full key string, minus username)
+_lookup_pubkey() {
+    local username="$1"
+    [[ -f "$USERS_FILE" ]] || { printf ""; return; }
+    awk -v u="$username" '$1==u{$1="";sub(/^[[:space:]]+/,"");print;exit}' "$USERS_FILE"
+}
+
+# Push users.txt to SYNC_HOST (silent on failure)
+_sync_push_users() {
+    [[ -z "$SYNC_HOST" || ! -f "$USERS_FILE" ]] && return 0
+    scp -q -o BatchMode=yes -o ConnectTimeout=5 \
+        "$USERS_FILE" "${SYNC_HOST}:${USERS_SYNC_REMOTE_PATH}" 2>/dev/null \
+        && printf "  ${GREEN}synced${RESET} users → %s\n" "$SYNC_HOST"
+}
+
+# Fire-and-forget: append a login entry to the device's ~/.ssh_shorty/userlog.txt
+# Uses ControlMaster socket already established by the main SSH connect call
+_log_remote_connection() {
+    local nick="$1" target="$2"
+    local user; user=$(_current_user)
+    [[ -z "$user" ]] && return 0
+    # Sanitise — only safe chars allowed in the remote log entry
+    [[ "$user" =~ ^[a-zA-Z0-9._-]+$ ]] || user="unknown"
+    [[ "$nick" =~ ^[a-zA-Z0-9._-]+$ ]] || nick="unknown"
+    local ts; ts=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+    (
+        ssh -q -o BatchMode=yes -o ConnectTimeout=5 \
+            "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" "$target" \
+            "mkdir -p ~/.ssh_shorty 2>/dev/null
+             flock -w 2 ~/.ssh_shorty/.userlog.lock \
+               sh -c 'printf \"%s %s %s\\n\" \"$ts\" \"$user\" \"$nick\" \
+               >> ~/.ssh_shorty/userlog.txt' 2>/dev/null" 2>/dev/null
+    ) </dev/null >/dev/null 2>&1 &
+    disown $!
+}
+
+# Submit an access request to SYNC_HOST's pending_requests/ directory
+_request_access() {
+    local nick="$1"
+    local user; user=$(_current_user)
+    local ts; ts=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+    local req_name="${ts//:/-}_${user}_${nick}.req"
+    mkdir -p "$PENDING_REQ_DIR"
+    printf '%s %s %s\n' "$ts" "$user" "$nick" > "$PENDING_REQ_DIR/$req_name"
+    if [[ -n "$SYNC_HOST" ]]; then
+        local rdir; rdir=$(_sync_remote_dir)
+        ssh -q -o BatchMode=yes -o ConnectTimeout=5 \
+            "$SYNC_HOST" "mkdir -p ~/${rdir}/pending_requests" 2>/dev/null
+        if scp -q -o BatchMode=yes -o ConnectTimeout=5 \
+                "$PENDING_REQ_DIR/$req_name" \
+                "${SYNC_HOST}:${rdir}/pending_requests/${req_name}" 2>/dev/null; then
+            printf "${GREEN}Access request sent.${RESET} Admin will be notified.\n"
+        else
+            printf "${YELLOW}Request saved locally.${RESET} Will sync when server is reachable.\n"
+        fi
+    else
+        printf "${YELLOW}No SYNC_HOST configured.${RESET} Request saved locally.\n"
+    fi
+}
+
+# Check for pending access requests; print a one-line notice if any exist.
+# Throttled to at most one check per 5 minutes; runs in background so it doesn't block.
+_check_pending_requests() {
+    [[ -z "$SYNC_HOST" ]] && return
+    local stamp="$CONFIG_DIR/.pending_check"
+    if [[ -f "$stamp" ]]; then
+        local _age; _age=$(( $(date +%s) - $(stat -c %Y "$stamp" 2>/dev/null || echo 0) ))
+        (( _age < 300 )) && return
+    fi
+    touch "$stamp" 2>/dev/null
+    local rdir; rdir=$(_sync_remote_dir)
+    (
+        local count
+        count=$(ssh -q -o BatchMode=yes -o ConnectTimeout=3 "$SYNC_HOST" \
+            "ls ~/${rdir}/pending_requests/*.req 2>/dev/null | wc -l" 2>/dev/null)
+        [[ -n "$count" && "$count" -gt 0 ]] && \
+            printf "${YELLOW}⚠ %d pending access request(s) — run: s --pending-requests${RESET}\n" \
+                "$count" >&2
+    ) </dev/null &
+    disown $!
+}
+
 # Extract SSH port from DEVICE_SSH_OPTS (defaults to 22)
 _get_ssh_port() {
     local j p=22
@@ -673,6 +790,9 @@ _dedup_mapfile "$MAPFILE"
 
 # Background pull — skipped for interactive file-edit commands to avoid clobbering open editor
 case "$1" in --edit|--fav) ;; *) _sync_bg ;; esac
+
+# Background admin notification — throttled to once per 5 minutes
+_check_pending_requests
 
 # Background update check — notifies on next run if newer version found
 _check_update
@@ -1304,6 +1424,165 @@ case "$1" in
         _sync_push
         ;;
 
+    --add-user)
+        [[ -z "$2" || -z "$3" ]] && {
+            printf "Usage: s --add-user <username> <ssh-pubkey>\n"; exit 1; }
+        _au_name="$2"; _au_key="$3"
+        [[ "$_au_name" =~ ^[a-zA-Z0-9._-]+$ ]] || {
+            printf "Invalid username '%s' — use alphanumeric, ., _, - only.\n" "$_au_name"
+            exit 1; }
+        _validate_pubkey "$_au_key" || {
+            printf "Invalid SSH public key.\n"; exit 1; }
+        mkdir -p "$CONFIG_DIR" && touch "$USERS_FILE"
+        if awk -v u="$_au_name" '$1==u{found=1;exit}END{exit !found}' \
+                "$USERS_FILE" 2>/dev/null; then
+            printf "User '%s' already exists. Use --edit-user to update.\n" "$_au_name"
+            exit 1
+        fi
+        printf '%s %s\n' "$_au_name" "$_au_key" >> "$USERS_FILE"
+        printf "Added user: %s\n" "$_au_name"
+        _sync_push_users
+        ;;
+
+    --edit-user)
+        [[ -z "$2" || -z "$3" ]] && {
+            printf "Usage: s --edit-user <username> <new-ssh-pubkey>\n"; exit 1; }
+        _eu_name="$2"; _eu_key="$3"
+        [[ -f "$USERS_FILE" ]] || { printf "No users.txt — add a user first: s --add-user\n"; exit 1; }
+        awk -v u="$_eu_name" '$1==u{found=1;exit}END{exit !found}' \
+                "$USERS_FILE" 2>/dev/null || {
+            printf "User '%s' not found. Use --add-user to add.\n" "$_eu_name"; exit 1; }
+        _validate_pubkey "$_eu_key" || {
+            printf "Invalid SSH public key.\n"; exit 1; }
+        _eu_tf=$(mktemp "$CONFIG_DIR/.users.XXXXXX")
+        awk -v u="$_eu_name" -v k="$_eu_key" \
+            '$1==u{print u " " k;next}{print}' "$USERS_FILE" > "$_eu_tf" \
+            && mv "$_eu_tf" "$USERS_FILE" || rm -f "$_eu_tf"
+        printf "Updated user: %s\n" "$_eu_name"
+        _sync_push_users
+        ;;
+
+    --remove-user)
+        [[ -z "$2" ]] && { printf "Usage: s --remove-user <username>\n"; exit 1; }
+        _ru_name="$2"
+        [[ -f "$USERS_FILE" ]] || { printf "No users.txt found.\n"; exit 1; }
+        awk -v u="$_ru_name" '$1==u{found=1;exit}END{exit !found}' \
+                "$USERS_FILE" 2>/dev/null || {
+            printf "User '%s' not found.\n" "$_ru_name"; exit 1; }
+        if [[ -t 0 ]]; then
+            printf "Remove user '%s'? [y/N] " "$_ru_name"
+            read -r _ru_confirm
+            [[ ! "$_ru_confirm" =~ ^[Yy]$ ]] && { printf "Aborted.\n"; exit 0; }
+        fi
+        grep -v "^${_ru_name}[[:space:]]" "$USERS_FILE" > "${USERS_FILE}.tmp" \
+            && mv "${USERS_FILE}.tmp" "$USERS_FILE"
+        printf "Removed user: %s\n" "$_ru_name"
+        _sync_push_users
+        ;;
+
+    --list-users)
+        if [[ ! -f "$USERS_FILE" ]] || ! grep -q . "$USERS_FILE" 2>/dev/null; then
+            printf "No users registered. Add one: s --add-user <name> \"<pubkey>\"\n"
+            exit 0
+        fi
+        printf "${BOLD}  %-24s %s${RESET}\n" "USERNAME" "KEY FINGERPRINT"
+        printf "  %s\n" "$(printf '─%.0s' {1..60})"
+        while IFS= read -r _lu_line; do
+            [[ -z "$_lu_line" || "$_lu_line" == '#'* ]] && continue
+            _lu_name="${_lu_line%% *}"
+            _lu_key="${_lu_line#* }"
+            _lu_fp=$(ssh-keygen -l -f <(printf '%s\n' "$_lu_key") 2>/dev/null \
+                | awk '{print $2, $4}')
+            printf "  ${GREEN}%-24s${RESET} %s\n" "$_lu_name" "${_lu_fp:-(invalid key)}"
+        done < "$USERS_FILE"
+        ;;
+
+    --user-log)
+        [[ -z "$2" ]] && { printf "Usage: s --user-log <nick>\n"; exit 1; }
+        _require_mapfile
+        _ul_nick="$2"
+        _ul_target=$(_lookup_target "$_ul_nick")
+        [[ -z "$_ul_target" ]] && { printf "Nickname '%s' not found.\n" "$_ul_nick"; exit 1; }
+        _load_device_opts "$_ul_nick"
+        _ul_target=$(_apply_mac_resolution "$_ul_nick" "$_ul_target")
+        printf "${BOLD}  %-24s %-20s %s${RESET}\n" "TIMESTAMP" "USER" "DEVICE"
+        printf "  %s\n" "$(printf '─%.0s' {1..56})"
+        ssh "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" "$_ul_target" \
+            "cat ~/.ssh_shorty/userlog.txt 2>/dev/null" \
+            | awk '{printf "  %-24s %-20s %s\n", $1, $2, $3}'
+        ;;
+
+    --provide-access)
+        [[ -z "$2" || -z "$3" ]] && {
+            printf "Usage: s --provide-access <username> <device>\n"; exit 1; }
+        _pa_user="$2"; _pa_nick="$3"
+        _require_mapfile
+        _pa_pubkey=$(_lookup_pubkey "$_pa_user")
+        [[ -z "$_pa_pubkey" ]] && {
+            printf "User '%s' not found in users.txt.\n" "$_pa_user"
+            printf "Add them first: s --add-user %s \"<pubkey>\"\n" "$_pa_user"
+            exit 1; }
+        _validate_pubkey "$_pa_pubkey" || {
+            printf "Stored key for '%s' is invalid. Update: s --edit-user %s \"<pubkey>\"\n" \
+                "$_pa_user" "$_pa_user"; exit 1; }
+        _pa_target=$(_lookup_target "$_pa_nick")
+        [[ -z "$_pa_target" ]] && { printf "Device '%s' not found.\n" "$_pa_nick"; exit 1; }
+        _load_device_opts "$_pa_nick"
+        _pa_target=$(_apply_mac_resolution "$_pa_nick" "$_pa_target")
+        printf "Granting '%s' access to '%s' (%s)...\n" "$_pa_user" "$_pa_nick" "$_pa_target"
+        _pa_b64=$(printf '%s' "$_pa_pubkey" | base64 | tr -d '\n')
+        ssh "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" "$_pa_target" bash << GRANT_EOF
+set -e
+k=\$(printf '%s' '${_pa_b64}' | base64 -d)
+b=\$(printf '%s' "\$k" | awk '{print \$2}')
+mkdir -p ~/.ssh && chmod 700 ~/.ssh
+touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys
+if grep -qF "\$b" ~/.ssh/authorized_keys 2>/dev/null; then
+    echo "Key already present — no change."
+else
+    [ -s ~/.ssh/authorized_keys ] && \\
+        [ "\$(tail -c 1 ~/.ssh/authorized_keys | wc -l)" -eq 0 ] && \\
+        printf '\n' >> ~/.ssh/authorized_keys
+    printf '%s\n' "\$k" >> ~/.ssh/authorized_keys
+    echo "Access granted."
+fi
+GRANT_EOF
+        # Clean up matching pending requests
+        if [[ -n "$SYNC_HOST" ]]; then
+            _pa_rdir=$(_sync_remote_dir)
+            ssh -q -o BatchMode=yes -o ConnectTimeout=5 "$SYNC_HOST" \
+                "rm -f ~/${_pa_rdir}/pending_requests/*_${_pa_user}_${_pa_nick}.req" \
+                2>/dev/null || true
+        fi
+        rm -f "$PENDING_REQ_DIR"/*_"${_pa_user}"_"${_pa_nick}".req 2>/dev/null || true
+        ;;
+
+    --pending-requests)
+        if [[ -z "$SYNC_HOST" ]]; then
+            printf "SYNC_HOST not configured.\n"; exit 1
+        fi
+        _pr_rdir=$(_sync_remote_dir)
+        _pr_list=$(ssh -q -o BatchMode=yes -o ConnectTimeout=10 "$SYNC_HOST" \
+            "ls ~/${_pr_rdir}/pending_requests/*.req 2>/dev/null" 2>/dev/null)
+        if [[ -z "$_pr_list" ]]; then
+            printf "No pending access requests.\n"; exit 0
+        fi
+        printf "${BOLD}  %-24s %-24s %s${RESET}\n" "USER" "DEVICE" "TIMESTAMP"
+        printf "  %s\n" "$(printf '─%.0s' {1..60})"
+        while IFS= read -r _pr_file; do
+            [[ -z "$_pr_file" ]] && continue
+            _pr_base=$(basename "$_pr_file" .req)
+            # Filename: 2026-07-01T10-30-00Z_user_nick
+            _pr_ts="${_pr_base%%_*}"
+            _pr_rest="${_pr_base#*_}"
+            _pr_pr_user="${_pr_rest%%_*}"
+            _pr_device="${_pr_rest#*_}"
+            printf "  ${YELLOW}%-24s${RESET} %-24s %s\n" \
+                "$_pr_pr_user" "$_pr_device" "${_pr_ts//-/:}"
+        done <<< "$_pr_list"
+        printf "\nGrant:  s --provide-access <user> <device>\n"
+        ;;
+
     --remove|-r)
         [[ -z "$2" ]] && { printf "Usage: s --remove <nickname>\n"; exit 1; }
         _require_mapfile
@@ -1388,6 +1667,11 @@ case "$1" in
                 "${SYNC_HOST}:${FAVS_SYNC_REMOTE_PATH}" "$_sfdl" 2>/dev/null \
                 && { mv "$_sfdl" "$FAVS_FILE"; printf "  ${GREEN}pulled${RESET}   %s:%s\n" "$SYNC_HOST" "$FAVS_SYNC_REMOTE_PATH"; } \
                 || rm -f "$_sfdl"
+            _sudl=$(mktemp "$CONFIG_DIR/.pull.XXXXXX")
+            scp -q -o BatchMode=yes -o ConnectTimeout=10 \
+                "${SYNC_HOST}:${USERS_SYNC_REMOTE_PATH}" "$_sudl" 2>/dev/null \
+                && { mv "$_sudl" "$USERS_FILE"; printf "  ${GREEN}pulled${RESET}   %s:%s\n" "$SYNC_HOST" "$USERS_SYNC_REMOTE_PATH"; } \
+                || rm -f "$_sudl"
             # Grab the remote version file so bg-check knows we're current
             scp -q -o BatchMode=yes -o ConnectTimeout=5 \
                 "${SYNC_HOST}:${_sync_rdir}/.machines_version" \
@@ -1410,6 +1694,11 @@ case "$1" in
                         "$FAVS_FILE" "${SYNC_HOST}:${FAVS_SYNC_REMOTE_PATH}" 2>/dev/null \
                     && printf "  ${GREEN}pushed${RESET}   %s → %s:%s\n" \
                         "$FAVS_FILE" "$SYNC_HOST" "$FAVS_SYNC_REMOTE_PATH"
+                [[ -f "$USERS_FILE" ]] && \
+                    scp -q -o BatchMode=yes -o ConnectTimeout=10 \
+                        "$USERS_FILE" "${SYNC_HOST}:${USERS_SYNC_REMOTE_PATH}" 2>/dev/null \
+                    && printf "  ${GREEN}pushed${RESET}   %s → %s:%s\n" \
+                        "$USERS_FILE" "$SYNC_HOST" "$USERS_SYNC_REMOTE_PATH"
                 # Bump version file so everyone picks it up
                 _sync_ver=$(date +%s)
                 ssh -q -o BatchMode=yes -o ConnectTimeout=5 \
@@ -1849,7 +2138,24 @@ case "$1" in
                 printf "${DIM}Connecting to %s → %s${RESET}\n" "$NICK" "$TARGET"
             fi
             _log_connection "$NICK" "$TARGET"
-            ssh "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" "$TARGET" "$@"
+            _log_remote_connection "$NICK" "$TARGET"
+            _ssh_err=$(mktemp "$CONFIG_DIR/.ssherr.XXXXXX")
+            ssh "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" "$TARGET" "$@" 2>"$_ssh_err"
+            _ssh_rc=$?
+            [[ -s "$_ssh_err" ]] && cat "$_ssh_err" >&2
+            if (( _ssh_rc == 255 )) && \
+                    grep -qi "permission denied.*publickey" "$_ssh_err" 2>/dev/null; then
+                printf "\n${YELLOW}No access to '%s'.${RESET}\n" "$NICK"
+                if [[ -t 0 ]]; then
+                    printf "Request access from admin? [y/N] "
+                    read -r _acc_resp
+                    if [[ "${_acc_resp,,}" == "y" ]]; then
+                        _request_access "$NICK"
+                    fi
+                fi
+            fi
+            rm -f "$_ssh_err"
+            exit $_ssh_rc
         fi
         ;;
 esac
