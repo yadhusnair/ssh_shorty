@@ -18,44 +18,71 @@
 
 3. **Tell the user** to run `exec zsh` after any completion change.
 
-## When adding a new `--command`:
-
-- Add the case to `s` (the script)
-- Add `'--command:description'` to the `subcommands` array in `completion.zsh`
-- Add `--command` to the `subcommands` string in `completion.bash`
-- Add tab-complete logic (CURRENT==3 machine picker, etc.) in both completion files
-- Add to the help text (`_usage` function in `s`)
-- Deploy all three files
-
 ## File ownership — what goes where
 
-- **`s`** — user-facing: connect, list, add/remove devices, sync, ping, fav, run, upload/download, etc.
-  - Also owns: transparent login logging (`_log_remote_connection`), permission-denied → access request prompt
-- **`s-admin`** — admin-facing: user registry (`--add-user`, `--edit-user`, `--remove-user`, `--list-users`), access control (`--provide-access`, `--pending-requests`), audit (`--user-log`)
-  - Future admin features go here as new `case` entries
-- **`completion-admin.zsh` / `completion-admin.bash`** — completions for `s-admin` (create when s-admin gets enough commands to warrant them)
+| File | Purpose |
+|------|---------|
+| `s` | User tool: connect, list, add/remove devices, sync, ping, fav, run, upload/download, rsync, tunnel, poll, status, watch, sysinfo |
+| `completion.zsh` | Zsh completion for `s` → `~/.zsh/completions/_s` |
+| `completion.bash` | Bash completion for `s` → `~/.local/share/bash-completion/completions/s` |
+| `install.sh` | First-run installer for regular users |
+| `s-admin` | Admin tool: user registry, access control, audit (see below) |
+| `completion-admin.zsh` | Zsh completion for `s-admin` → `~/.zsh/completions/_s-admin` |
+| `completion-admin.bash` | Bash completion for `s-admin` → `~/.local/share/bash-completion/completions/s-admin` |
+| `install-admin.sh` | Installer for admins |
+
+### What `s` owns
+- All device management and SSH connect commands
+- Transparent login logging: `_log_remote_connection` (bg SSH → `~/.ssh_shorty/userlog.txt` on device)
+- Permission-denied detection → "Request access from admin? [y/N]" → writes `.req` to SYNC_HOST
+- `SHORTY_USER` identity (set in `~/.config/ssh_shorty/config`, defaults to `$USER`)
+
+### What `s-admin` owns
+- `--add-user / --edit-user / --remove-user / --list-users` — user registry (`users.txt`)
+- `--provide-access <user> <device>` — grant SSH access (idempotent, key via heredoc)
+- `--pending-requests` — list/review queued access requests
+- `--user-log <nick>` — view device login history
+- Future admin features go here as new `case` entries
+
+### Admin differentiation (current state)
+There is **no enforcement** — anyone who runs `install-admin.sh` gets `s-admin`. The implicit gate is SSH key access: `--provide-access` and `--pending-requests` require SSH access to SYNC_HOST or the target device, so they naturally fail for unauthorized users. Formal role enforcement (e.g. `admins.txt` on SYNC_HOST) is a planned future feature.
+
+## When adding a new user command to `s`:
+
+- Add the `case` entry to `s`
+- Add `'--command:description'` to the `subcommands` array in `completion.zsh`
+- Add `--command` to the `subcommands` string in `completion.bash`
+- Add tab-complete logic in both completion files (CURRENT==3 machine picker, etc.)
+- Add to the `usage()` function in `s`
+- Deploy: `cp s ~/.local/bin/s` + both completion files + `rm -f ~/.zcompdump*`
 
 ## When adding a new admin command to `s-admin`:
 
-- Add the case to `s-admin`
-- Add `'--command:description'` to `completion-admin.zsh` subcommands array (create file if not yet present)
-- Add `--command` to `completion-admin.bash` subcommands string (create file if not yet present)
+- Add the `case` entry to `s-admin`
+- Add `'--command:description'` to the `subcommands` array in `completion-admin.zsh`
+- Add `--command` to the `subcommands` string in `completion-admin.bash`
 - Add tab-complete logic in both admin completion files
-- Add to the `_usage` function in `s-admin`
-- Deploy: `cp s-admin ~/.local/bin/s-admin` (or `bash install-admin.sh`)
+- Add to the `_usage()` function in `s-admin`
+- Deploy: `cp s-admin ~/.local/bin/s-admin` + both admin completion files + `rm -f ~/.zcompdump*`
 
-## Deploying `s-admin`:
+## Deploying everything at once:
 
 ```bash
+# User tool
+cp s ~/.local/bin/s
+cp completion.zsh ~/.zsh/completions/_s
+cp completion.bash ~/.local/share/bash-completion/completions/s
+
+# Admin tool
 cp s-admin ~/.local/bin/s-admin
-# completions (once created):
 cp completion-admin.zsh ~/.zsh/completions/_s-admin
 cp completion-admin.bash ~/.local/share/bash-completion/completions/s-admin
+
 rm -f ~/.zcompdump*
 ```
-Or: `bash install-admin.sh`
+Or run `bash install.sh` (user) / `bash install-admin.sh` (admin).
 
 ## Version bumping
 
-- Bump `VERSION` in both `s` and `VERSION` file together
-- After bumping: `git add s VERSION && git commit && git push && make release`
+- Bump `VERSION` in both `s` and `VERSION` file together (s-admin reads `VERSION` from the same repo but has its own hardcoded version string — bump both)
+- After bumping: `git add s s-admin VERSION && git commit && git push && make release`
