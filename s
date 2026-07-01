@@ -1972,24 +1972,29 @@ case "$1" in
                 printf "${DIM}Connecting to %s → %s${RESET}\n" "$NICK" "$TARGET"
             fi
             _log_connection "$NICK" "$TARGET"
-            _log_remote_connection "$NICK" "$TARGET"
-            _ssh_err=$(mktemp "$CONFIG_DIR/.ssherr.XXXXXX")
-            ssh "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" "$TARGET" "$@" 2>"$_ssh_err"
-            _ssh_rc=$?
-            [[ -s "$_ssh_err" ]] && cat "$_ssh_err" >&2
-            if (( _ssh_rc == 255 )) && \
-                    grep -qi "permission denied.*publickey" "$_ssh_err" 2>/dev/null; then
-                printf "\n${YELLOW}No access to '%s'.${RESET}\n" "$NICK"
-                if [[ -t 0 ]]; then
-                    printf "Request access from admin? [y/N] "
-                    read -r _acc_resp
-                    if [[ "${_acc_resp,,}" == "y" ]]; then
-                        _request_access "$NICK"
+            # BatchMode pre-check: detects missing key access before SSH can fall
+            # through to a password prompt. On success, also seeds the ControlMaster
+            # socket so the real connect below is near-instant.
+            _pc_err=$(mktemp "$CONFIG_DIR/.ssherr.XXXXXX")
+            if ! ssh -o BatchMode=yes -o ConnectTimeout=5 \
+                    "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" "$TARGET" true \
+                    2>"$_pc_err"; then
+                if grep -qi "permission denied" "$_pc_err" 2>/dev/null; then
+                    rm -f "$_pc_err"
+                    printf "\n${YELLOW}No key access to '%s'.${RESET}\n" "$NICK"
+                    if [[ -t 0 ]]; then
+                        printf "Request access from admin? [y/N] "
+                        read -r _acc_resp
+                        if [[ "${_acc_resp,,}" == "y" ]]; then
+                            _request_access "$NICK"
+                        fi
                     fi
+                    exit 1
                 fi
             fi
-            rm -f "$_ssh_err"
-            exit $_ssh_rc
+            rm -f "$_pc_err"
+            _log_remote_connection "$NICK" "$TARGET"
+            exec ssh "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" "$TARGET" "$@"
         fi
         ;;
 esac
