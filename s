@@ -1,7 +1,7 @@
 #!/bin/bash
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 
-VERSION="20260709"
+VERSION="20260710"
 REPO_RAW="https://raw.githubusercontent.com/yadhusnair/ssh_shorty/main"
 
 MAPFILE="$HOME/.config/ssh_shorty/machines.txt"
@@ -148,6 +148,88 @@ _spinner_stop() {
     kill "$1" 2>/dev/null
     wait "$1" 2>/dev/null
     _clear_line
+}
+
+_osc_spin_start() {
+    local msg="$1"
+    ( exec > /dev/tty 2>/dev/null
+      local -a wave=('▁' '▂' '▃' '▄' '▅' '▆' '▇' '█' '▇' '▆' '▅' '▄' '▃' '▂')
+      local n=${#wave[@]} w=12 i=0
+      while true; do
+          _clear_line
+          local bar="" j
+          for (( j=0; j<w; j++ )); do bar+="${wave[$(( (i+j) % n ))]}"; done
+          printf "${CYAN}%s${RESET} ${DIM}%s${RESET}" "$bar" "$msg"
+          i=$(( (i+1) % n ))
+          sleep 0.07
+      done
+    ) &
+    printf '%d' $!
+}
+
+_neon_trace() {
+    local text="$1" len j
+    len=${#text}
+    _hide_cursor
+    for (( i=0; i<=len; i++ )); do
+        _clear_line
+        for (( j=0; j<i; j++ )); do
+            if (( i - j <= 3 )); then
+                printf $'\033[1;36m%s\033[0m' "${text:$j:1}"
+            else
+                printf "${GREEN}%s${RESET}" "${text:$j:1}"
+            fi
+        done
+        (( i < len )) && printf $'\033[1;37m%s\033[0m' "${text:$i:1}"
+        sleep 0.018
+    done
+    printf '\n'
+    _show_cursor
+}
+
+_braille_header() {
+    local msg="$1"
+    local -a frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+    local n=${#frames[@]}
+    _hide_cursor
+    for (( i=0; i<12; i++ )); do
+        _clear_line
+        printf "${CYAN}%s${RESET} ${DIM}%s${RESET}" "${frames[$(( i % n ))]}" "$msg"
+        sleep 0.07
+    done
+    _clear_line
+    printf "${CYAN}⠿${RESET} ${DIM}%s${RESET}\n" "$msg"
+    _show_cursor
+}
+
+_radar_spin_start() {
+    local msg="$1"
+    ( exec > /dev/tty 2>/dev/null
+      local -a frames=('◌' '○' '◎' '◉' '◎' '○')
+      local n=${#frames[@]} i=0
+      while true; do
+          _clear_line
+          printf "${CYAN}%s${RESET}  %s" "${frames[$i]}" "$msg"
+          i=$(( (i+1) % n ))
+          sleep 0.1
+      done
+    ) &
+    printf '%d' $!
+}
+
+_block_header() {
+    local msg="$1" w=20 j
+    _hide_cursor
+    for (( i=0; i<=w; i++ )); do
+        _clear_line
+        printf "${GREEN}[${RESET}"
+        for (( j=0; j<i; j++ )); do printf "${BOLD}${GREEN}█${RESET}"; done
+        for (( j=i; j<w; j++ )); do printf "${DIM}░${RESET}"; done
+        printf "${GREEN}]${RESET} ${DIM}%s${RESET}" "$msg"
+        sleep 0.02
+    done
+    printf '\n'
+    _show_cursor
 }
 
 trap '[[ $_CURSOR_HIDDEN -eq 1 ]] && printf '\''\033[?25h'\''' EXIT INT TERM
@@ -895,7 +977,7 @@ case "$1" in
         done < <(_resolve_targets "${filter:---all}")
         [[ ${#st_nicks[@]} -eq 0 ]] && { printf "No devices found.\n"; exit 0; }
         spinner_pid=""
-        _anim_enabled && spinner_pid=$(_spinner_start "Querying resources for ${#st_nicks[@]} device(s)...")
+        _anim_enabled && spinner_pid=$(_osc_spin_start "Querying resources for ${#st_nicks[@]} device(s)...")
         tmpdir=$(mktemp -d)
         trap 'rm -rf "$tmpdir"; _show_cursor' EXIT INT TERM
         for i in "${!st_nicks[@]}"; do
@@ -1054,7 +1136,7 @@ case "$1" in
 
         spinner_pid=""
         if _anim_enabled; then
-            spinner_pid=$(_spinner_start "Pinging ${#st_nicks[@]} device(s)...")
+            spinner_pid=$(_radar_spin_start "Pinging ${#st_nicks[@]} device(s)...")
         else
             printf "Pinging %d device(s)...\n" "${#st_nicks[@]}"
         fi
@@ -1345,8 +1427,7 @@ case "$1" in
         TARGET=$(_apply_mac_resolution "$NICK" "$TARGET")
         ssh_cmd="ssh"
         for o in "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}"; do ssh_cmd+=" $o"; done
-        _anim_enabled && _glitch_line \
-            "Downloading  ${NICK}:${REMOTE_PATH}  →  ${LOCAL_DEST}" "${BOLD}${GREEN}"
+        _anim_enabled && _block_header "Downloading  ${NICK}:${REMOTE_PATH}  →  ${LOCAL_DEST}"
         rsync -avP -e "$ssh_cmd" "$TARGET:$REMOTE_PATH" "$LOCAL_DEST"
         ;;
 
@@ -1431,8 +1512,7 @@ case "$1" in
         TARGET=$(_apply_mac_resolution "$NICK" "$TARGET")
         ssh_cmd="ssh"
         for o in "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}"; do ssh_cmd+=" $o"; done
-        _anim_enabled && _glitch_line \
-            "Uploading  ${LOCAL_PATH}  →  ${NICK}:${REMOTE_PATH}" "${BOLD}${GREEN}"
+        _anim_enabled && _block_header "Uploading  ${LOCAL_PATH}  →  ${NICK}:${REMOTE_PATH}"
         rsync -avP -e "$ssh_cmd" "$LOCAL_PATH" "$TARGET:$REMOTE_PATH"
         ;;
 
@@ -1568,7 +1648,7 @@ case "$1" in
         fi
 
         if _anim_enabled; then
-            _glitch_line "Fleet sync  ←→  ${SYNC_HOST}" "${DIM}${CYAN}"
+            _braille_header "Fleet sync  ←→  ${SYNC_HOST}"
         else
             printf "Syncing with %s...\n" "$SYNC_HOST"
         fi
@@ -1687,11 +1767,17 @@ case "$1" in
             _pr=$(_apply_mac_resolution "${_ping_nicks[0]}" "${_ping_targets[0]}")
             HOST="${_pr#*@}"
             _pp=$(_get_ssh_port)
-            printf "Pinging %s (%s:%s)... " "${_ping_nicks[0]}" "$HOST" "$_pp"
+            _radar_pid=""
+            _anim_enabled && _radar_pid=$(_radar_spin_start "${_ping_nicks[0]}  ${HOST}:${_pp}")
             if nc -z -w2 "$HOST" "$_pp" &>/dev/null; then
-                printf "${GREEN}reachable${RESET}\n"
+                [[ -n "$_radar_pid" ]] && _spinner_stop "$_radar_pid"
+                printf "${CYAN}◉${RESET}  %-18s ${DIM}%s:%s${RESET}  ${GREEN}reachable${RESET}\n" \
+                    "${_ping_nicks[0]}" "$HOST" "$_pp"
             else
-                printf "${RED}unreachable${RESET}\n"; exit 1
+                [[ -n "$_radar_pid" ]] && _spinner_stop "$_radar_pid"
+                printf "${CYAN}◌${RESET}  %-18s ${DIM}%s:%s${RESET}  ${RED}unreachable${RESET}\n" \
+                    "${_ping_nicks[0]}" "$HOST" "$_pp"
+                exit 1
             fi
         else
             printf "Pinging %d device(s)...\n" "${#_ping_nicks[@]}"
@@ -2072,7 +2158,7 @@ case "$1" in
             TARGET=$(_apply_mac_resolution "$NICK" "$TARGET")
             
             if _anim_enabled; then
-                _glitch_line "Connecting to ${NICK}  →  ${TARGET}" "${DIM}${GREEN}"
+                _neon_trace "Connecting to ${NICK}  →  ${TARGET}"
             else
                 printf "${DIM}Connecting to %s → %s${RESET}\n" "$NICK" "$TARGET"
             fi
