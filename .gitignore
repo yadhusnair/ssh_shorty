@@ -1,3 +1,15 @@
 machines.txt
 *.log
 eventlog.txt
+
+# User registry — contains SSH keys; lives in ~/.config/ssh_shorty/, not the repo
+users.txt
+
+# Editor and OS artifacts
+*~
+.DS_Store
+*.swp
+
+# Temp files
+*.tmp
+*.bak

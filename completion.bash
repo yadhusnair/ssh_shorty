@@ -14,7 +14,7 @@ _ssh_shorty_complete() {
         [[ "${COMP_WORDS[i]}" == ":" ]] && (( cword -= 2 ))
     done
 
-    local subcommands="--list --add --set --rename --remove --tag --untag --sync --ping --poll --edit --paths --help --update --fav --status --watch --run --run-script --sysinfo --tail --tunnel --close --export-ssh-config --keydeploy --last --import -u --upload -d --download --view -m --add-user --edit-user --remove-user --list-users --user-log --provide-access --pending-requests"
+    local subcommands="--list --add --set --rename --remove --tag --untag --sync --ping --poll --edit --paths --help --update --fav --status --watch --run --run-script --sysinfo --tail --tunnel --close --export-ssh-config --keydeploy --last --import -u --upload -d --download --view -m"
     local mapfile_path="$HOME/.config/ssh_shorty/machines.txt"
     local paths_file="$HOME/.config/ssh_shorty/machine-paths.txt"
     local machines=()
@@ -128,29 +128,9 @@ _ssh_shorty_complete() {
         fi
     else
         case "$first" in
-            --set|-s|--rename|--remove|-r|--poll|--tunnel|-t|--user-log)
+            --set|-s|--rename|--remove|-r|--poll|--tunnel|-t)
                 [[ "$cword" -eq 2 ]] && \
                     COMPREPLY=( $(compgen -W "${machines[*]}" -- "$cur") )
-                ;;
-            --provide-access)
-                if [[ "$cword" -eq 2 ]]; then
-                    local -a _users=()
-                    [[ -f "$HOME/.config/ssh_shorty/users.txt" ]] && \
-                        mapfile -t _users < <(awk 'NF>=2&&$1!~/^#/{print $1}' \
-                            "$HOME/.config/ssh_shorty/users.txt" 2>/dev/null)
-                    COMPREPLY=( $(compgen -W "${_users[*]}" -- "$cur") )
-                elif [[ "$cword" -eq 3 ]]; then
-                    COMPREPLY=( $(compgen -W "${machines[*]}" -- "$cur") )
-                fi
-                ;;
-            --edit-user|--remove-user)
-                if [[ "$cword" -eq 2 ]]; then
-                    local -a _users=()
-                    [[ -f "$HOME/.config/ssh_shorty/users.txt" ]] && \
-                        mapfile -t _users < <(awk 'NF>=2&&$1!~/^#/{print $1}' \
-                            "$HOME/.config/ssh_shorty/users.txt" 2>/dev/null)
-                    COMPREPLY=( $(compgen -W "${_users[*]}" -- "$cur") )
-                fi
                 ;;
             --ping|-p)
                 if [[ "$cword" -eq 2 ]]; then

@@ -1,0 +1,304 @@
+#!/bin/bash
+# s-admin — admin tool for ssh_shorty fleet management
+VERSION="20260702"
+
+# ── Config ──────────────────────────────────────────────────────────────────────
+CONFIG_DIR="$HOME/.config/ssh_shorty"
+MAPFILE="$CONFIG_DIR/machines.txt"
+USERS_FILE="$CONFIG_DIR/users.txt"
+PENDING_REQ_DIR="$CONFIG_DIR/pending_requests"
+SSH_CTRL_DIR="$HOME/.ssh/ctrl"
+
+SYNC_HOST=""
+SYNC_REMOTE_PATH="validation/machines.txt"
+[[ -f "$CONFIG_DIR/config" ]] && source "$CONFIG_DIR/config"
+
+USERS_SYNC_REMOTE_PATH="${SYNC_REMOTE_PATH%/*}/users.txt"
+SHORTY_USER="${SHORTY_USER:-$USER}"
+
+# ── Colors ──────────────────────────────────────────────────────────────────────
+if [[ -t 1 && -z "${NO_COLOR-}" ]]; then
+    RED=$'\033[0;31m'
+    GREEN=$'\033[0;32m'
+    YELLOW=$'\033[1;33m'
+    CYAN=$'\033[0;36m'
+    BOLD=$'\033[1m'
+    DIM=$'\033[2m'
+    RESET=$'\033[0m'
+else
+    RED='' GREEN='' YELLOW='' CYAN='' BOLD='' DIM='' RESET=''
+fi
+
+# ── ControlMaster ───────────────────────────────────────────────────────────────
+mkdir -p "$SSH_CTRL_DIR" 2>/dev/null
+SSH_CTRL_OPTS=(-o ControlMaster=auto
+               -o "ControlPath=${SSH_CTRL_DIR}/%h-%p-%r"
+               -o ControlPersist=10m)
+
+# ── Helpers ─────────────────────────────────────────────────────────────────────
+
+_sync_remote_dir() { printf '%s' "${SYNC_REMOTE_PATH%/*}"; }
+
+_require_mapfile() {
+    [[ -f "$MAPFILE" ]] || { printf "Machine map not found: %s\n" "$MAPFILE" >&2; exit 1; }
+}
+
+_nick_exists() {
+    awk -v n="$1" '$1==n{found=1}END{exit !found}' "$MAPFILE"
+}
+
+_lookup_target() {
+    local n="$1"
+    local line; line=$(awk -v n="$n" '$1==n{print;exit}' "$MAPFILE")
+    [[ -z "$line" ]] && return
+    local t; t=$(echo "$line" | awk '{print $2}')
+    local mac=""
+    for field in $line; do [[ "$field" == mac=* ]] && mac="${field#mac=}"; done
+    local user="" host="$t"
+    [[ "$t" == *@* ]] && { user="${t%%@*}@"; host="${t#*@}"; }
+    if [[ "$host" == *.local ]]; then
+        local ip=""
+        command -v getent &>/dev/null && \
+            ip=$(getent hosts "$host" | awk '{print $1}' | head -1)
+        [[ -n "$ip" ]] && { printf '%s%s\n' "$user" "$ip"; return; }
+    fi
+    if [[ -n "$mac" ]] && command -v arp &>/dev/null; then
+        local ip
+        if [[ "$(uname)" == Darwin ]]; then
+            ip=$(arp -a 2>/dev/null | awk -v m="${mac,,}" \
+                'tolower($0)~m{gsub(/[()]/,"",$2);print $2;exit}')
+        else
+            ip=$(arp -n 2>/dev/null | awk -v m="${mac,,}" \
+                'tolower($0)~m{print $1;exit}')
+        fi
+        [[ -n "$ip" ]] && { printf '%s%s\n' "$user" "$ip"; return; }
+    fi
+    printf '%s\n' "$t"
+}
+
+_load_device_opts() {
+    DEVICE_SSH_OPTS=()
+    local line; line=$(awk -v n="$1" '$1==n{print;exit}' "$MAPFILE" 2>/dev/null)
+    for field in $line; do
+        case "$field" in
+            port=*)    DEVICE_SSH_OPTS+=(-p "${field#port=}") ;;
+            key=*)     DEVICE_SSH_OPTS+=(-i "${field#key=}") ;;
+            forward=*) DEVICE_SSH_OPTS+=(-L "${field#forward=}") ;;
+        esac
+    done
+}
+
+_resolve_target() {
+    local nick="$1"
+    local resolved; resolved=$(_lookup_target "$nick")
+    [[ -n "$resolved" ]] && printf '%s\n' "$resolved"
+}
+
+_validate_pubkey() {
+    ssh-keygen -l -f <(printf '%s\n' "$1") >/dev/null 2>&1
+}
+
+_lookup_pubkey() {
+    [[ -f "$USERS_FILE" ]] || { printf ""; return; }
+    awk -v u="$1" '$1==u{$1="";sub(/^[[:space:]]+/,"");print;exit}' "$USERS_FILE"
+}
+
+_sync_push_users() {
+    [[ -z "$SYNC_HOST" || ! -f "$USERS_FILE" ]] && return 0
+    scp -q -o BatchMode=yes -o ConnectTimeout=5 \
+        "$USERS_FILE" "${SYNC_HOST}:${USERS_SYNC_REMOTE_PATH}" 2>/dev/null \
+        && printf "  ${GREEN}synced${RESET} users → %s\n" "$SYNC_HOST"
+}
+
+_usage() {
+    printf "${BOLD}s-admin${RESET} — fleet admin tool (v%s)\n\n" "$VERSION"
+    printf "${BOLD}User registry:${RESET}\n"
+    printf "  s-admin --add-user <name> \"<pubkey>\"       register a user\n"
+    printf "  s-admin --edit-user <name> \"<pubkey>\"      update a user's SSH key\n"
+    printf "  s-admin --remove-user <name>               remove a user\n"
+    printf "  s-admin --list-users                       list all registered users\n"
+    printf "\n${BOLD}Access control:${RESET}\n"
+    printf "  s-admin --provide-access <user> <device>   grant SSH access to a device\n"
+    printf "  s-admin --pending-requests                 list pending access requests\n"
+    printf "\n${BOLD}Audit:${RESET}\n"
+    printf "  s-admin --user-log <nick>                  show login history for a device\n"
+}
+
+# ── Commands ────────────────────────────────────────────────────────────────────
+
+[[ -z "$1" ]] && { _usage; exit 1; }
+
+case "$1" in
+
+    --add-user)
+        [[ -z "$2" || -z "$3" ]] && {
+            printf "Usage: s-admin --add-user <username> \"<ssh-pubkey>\"\n"; exit 1; }
+        _au_name="$2"; _au_key="$3"
+        [[ "$_au_name" =~ ^[a-zA-Z0-9._-]+$ ]] || {
+            printf "Invalid username '%s' — alphanumeric, ., _, - only.\n" "$_au_name"
+            exit 1; }
+        _validate_pubkey "$_au_key" || {
+            printf "Invalid SSH public key.\n"; exit 1; }
+        mkdir -p "$CONFIG_DIR" && touch "$USERS_FILE"
+        if awk -v u="$_au_name" '$1==u{found=1;exit}END{exit !found}' \
+                "$USERS_FILE" 2>/dev/null; then
+            printf "User '%s' already exists. Use --edit-user to update.\n" "$_au_name"
+            exit 1
+        fi
+        printf '%s %s\n' "$_au_name" "$_au_key" >> "$USERS_FILE"
+        printf "Added user: %s\n" "$_au_name"
+        _sync_push_users
+        ;;
+
+    --edit-user)
+        [[ -z "$2" || -z "$3" ]] && {
+            printf "Usage: s-admin --edit-user <username> \"<new-ssh-pubkey>\"\n"; exit 1; }
+        _eu_name="$2"; _eu_key="$3"
+        [[ -f "$USERS_FILE" ]] || {
+            printf "No users.txt — add a user first: s-admin --add-user\n"; exit 1; }
+        awk -v u="$_eu_name" '$1==u{found=1;exit}END{exit !found}' \
+                "$USERS_FILE" 2>/dev/null || {
+            printf "User '%s' not found. Use --add-user to add.\n" "$_eu_name"; exit 1; }
+        _validate_pubkey "$_eu_key" || {
+            printf "Invalid SSH public key.\n"; exit 1; }
+        _eu_tf=$(mktemp "$CONFIG_DIR/.users.XXXXXX")
+        awk -v u="$_eu_name" -v k="$_eu_key" \
+            '$1==u{print u " " k;next}{print}' "$USERS_FILE" > "$_eu_tf" \
+            && mv "$_eu_tf" "$USERS_FILE" || rm -f "$_eu_tf"
+        printf "Updated user: %s\n" "$_eu_name"
+        _sync_push_users
+        ;;
+
+    --remove-user)
+        [[ -z "$2" ]] && {
+            printf "Usage: s-admin --remove-user <username>\n"; exit 1; }
+        _ru_name="$2"
+        [[ -f "$USERS_FILE" ]] || { printf "No users.txt found.\n"; exit 1; }
+        awk -v u="$_ru_name" '$1==u{found=1;exit}END{exit !found}' \
+                "$USERS_FILE" 2>/dev/null || {
+            printf "User '%s' not found.\n" "$_ru_name"; exit 1; }
+        if [[ -t 0 ]]; then
+            printf "Remove user '%s'? [y/N] " "$_ru_name"
+            read -r _ru_confirm
+            [[ ! "$_ru_confirm" =~ ^[Yy]$ ]] && { printf "Aborted.\n"; exit 0; }
+        fi
+        grep -v "^${_ru_name}[[:space:]]" "$USERS_FILE" > "${USERS_FILE}.tmp" \
+            && mv "${USERS_FILE}.tmp" "$USERS_FILE"
+        printf "Removed user: %s\n" "$_ru_name"
+        _sync_push_users
+        ;;
+
+    --list-users)
+        if [[ ! -f "$USERS_FILE" ]] || ! grep -q . "$USERS_FILE" 2>/dev/null; then
+            printf "No users registered. Add one: s-admin --add-user <name> \"<pubkey>\"\n"
+            exit 0
+        fi
+        printf "${BOLD}  %-24s %s${RESET}\n" "USERNAME" "KEY FINGERPRINT"
+        printf "  %s\n" "$(printf '─%.0s' {1..60})"
+        while IFS= read -r _lu_line; do
+            [[ -z "$_lu_line" || "$_lu_line" == '#'* ]] && continue
+            _lu_name="${_lu_line%% *}"
+            _lu_key="${_lu_line#* }"
+            _lu_fp=$(ssh-keygen -l -f <(printf '%s\n' "$_lu_key") 2>/dev/null \
+                | awk '{print $2, $4}')
+            printf "  ${GREEN}%-24s${RESET} %s\n" "$_lu_name" "${_lu_fp:-(invalid key)}"
+        done < "$USERS_FILE"
+        ;;
+
+    --user-log)
+        [[ -z "$2" ]] && { printf "Usage: s-admin --user-log <nick>\n"; exit 1; }
+        _require_mapfile
+        _ul_nick="$2"
+        _ul_target=$(_resolve_target "$_ul_nick")
+        [[ -z "$_ul_target" ]] && {
+            printf "Nickname '%s' not found.\n" "$_ul_nick"; exit 1; }
+        _load_device_opts "$_ul_nick"
+        printf "${BOLD}  %-24s %-20s %s${RESET}\n" "TIMESTAMP" "USER" "DEVICE"
+        printf "  %s\n" "$(printf '─%.0s' {1..56})"
+        ssh "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" "$_ul_target" \
+            "cat ~/.ssh_shorty/userlog.txt 2>/dev/null" \
+            | awk '{printf "  %-24s %-20s %s\n", $1, $2, $3}'
+        ;;
+
+    --provide-access)
+        [[ -z "$2" || -z "$3" ]] && {
+            printf "Usage: s-admin --provide-access <username> <device>\n"; exit 1; }
+        _pa_user="$2"; _pa_nick="$3"
+        _require_mapfile
+        _pa_pubkey=$(_lookup_pubkey "$_pa_user")
+        [[ -z "$_pa_pubkey" ]] && {
+            printf "User '%s' not found in users.txt.\n" "$_pa_user"
+            printf "Add them first: s-admin --add-user %s \"<pubkey>\"\n" "$_pa_user"
+            exit 1; }
+        _validate_pubkey "$_pa_pubkey" || {
+            printf "Stored key for '%s' is invalid.\n" "$_pa_user"
+            printf "Update: s-admin --edit-user %s \"<pubkey>\"\n" "$_pa_user"
+            exit 1; }
+        _pa_target=$(_resolve_target "$_pa_nick")
+        [[ -z "$_pa_target" ]] && {
+            printf "Device '%s' not found.\n" "$_pa_nick"; exit 1; }
+        _load_device_opts "$_pa_nick"
+        printf "Granting '%s' access to '%s' (%s)...\n" \
+            "$_pa_user" "$_pa_nick" "$_pa_target"
+        _pa_b64=$(printf '%s' "$_pa_pubkey" | base64 | tr -d '\n')
+        ssh "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" "$_pa_target" bash << GRANT_EOF
+set -e
+k=\$(printf '%s' '${_pa_b64}' | base64 -d)
+b=\$(printf '%s' "\$k" | awk '{print \$2}')
+mkdir -p ~/.ssh && chmod 700 ~/.ssh
+touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys
+if grep -qF "\$b" ~/.ssh/authorized_keys 2>/dev/null; then
+    echo "Key already present — no change."
+else
+    [ -s ~/.ssh/authorized_keys ] && \\
+        [ "\$(tail -c 1 ~/.ssh/authorized_keys | wc -l)" -eq 0 ] && \\
+        printf '\n' >> ~/.ssh/authorized_keys
+    printf '%s\n' "\$k" >> ~/.ssh/authorized_keys
+    echo "Access granted."
+fi
+GRANT_EOF
+        # Clear matching pending requests
+        if [[ -n "$SYNC_HOST" ]]; then
+            _pa_rdir=$(_sync_remote_dir)
+            ssh -q -o BatchMode=yes -o ConnectTimeout=5 "$SYNC_HOST" \
+                "rm -f ~/${_pa_rdir}/pending_requests/*_${_pa_user}_${_pa_nick}.req" \
+                2>/dev/null || true
+        fi
+        rm -f "$PENDING_REQ_DIR"/*_"${_pa_user}"_"${_pa_nick}".req 2>/dev/null || true
+        ;;
+
+    --pending-requests)
+        if [[ -z "$SYNC_HOST" ]]; then
+            printf "SYNC_HOST not configured.\n"; exit 1
+        fi
+        _pr_rdir=$(_sync_remote_dir)
+        _pr_list=$(ssh -q -o BatchMode=yes -o ConnectTimeout=10 "$SYNC_HOST" \
+            "ls ~/${_pr_rdir}/pending_requests/*.req 2>/dev/null" 2>/dev/null)
+        if [[ -z "$_pr_list" ]]; then
+            printf "No pending access requests.\n"; exit 0
+        fi
+        printf "${BOLD}  %-24s %-24s %s${RESET}\n" "USER" "DEVICE" "TIMESTAMP"
+        printf "  %s\n" "$(printf '─%.0s' {1..64})"
+        while IFS= read -r _pr_file; do
+            [[ -z "$_pr_file" ]] && continue
+            _pr_base=$(basename "$_pr_file" .req)
+            _pr_ts="${_pr_base%%_*}"
+            _pr_rest="${_pr_base#*_}"
+            _pr_pr_user="${_pr_rest%%_*}"
+            _pr_device="${_pr_rest#*_}"
+            printf "  ${YELLOW}%-24s${RESET} %-24s %s\n" \
+                "$_pr_pr_user" "$_pr_device" "${_pr_ts//-/:}"
+        done <<< "$_pr_list"
+        printf "\nGrant:  s-admin --provide-access <user> <device>\n"
+        ;;
+
+    --help|-h)
+        _usage
+        ;;
+
+    *)
+        printf "Unknown command: %s\n\n" "$1" >&2
+        _usage
+        exit 1
+        ;;
+esac

@@ -33,13 +33,6 @@ _ssh_shorty() {
     '--tag:add a tag to a device'
     '--untag:remove a tag from a device'
     '--sync:pull/push fleet from SYNC_HOST'
-    '--add-user:register a user with their SSH key'
-    '--edit-user:update a user SSH key'
-    '--remove-user:remove a user'
-    '--list-users:list all registered users'
-    '--user-log:show login history for a device'
-    '--provide-access:grant a user access to a device'
-    '--pending-requests:list pending access requests'
     '--ping:check reachability'
     '--poll:wait until online then connect'
     '--edit:open machines.txt in $EDITOR'
@@ -148,26 +141,8 @@ _ssh_shorty() {
     fi
   else
     case "$first" in
-      --set|--rename|--remove|--tunnel|-t|--user-log)
+      --set|--rename|--remove|--tunnel|-t)
         (( CURRENT == 3 )) && _describe 'machine' machines
-        ;;
-      --provide-access)
-        if (( CURRENT == 3 )); then
-          local -a _users
-          _users=(${(f)"$(awk 'NF>=2&&$1!~/^#/{print $1}' \
-            "$HOME/.config/ssh_shorty/users.txt" 2>/dev/null)"})
-          compadd -S ' ' -- "${_users[@]}"
-        elif (( CURRENT == 4 )); then
-          _describe 'machine' machines
-        fi
-        ;;
-      --edit-user|--remove-user)
-        if (( CURRENT == 3 )); then
-          local -a _users
-          _users=(${(f)"$(awk 'NF>=2&&$1!~/^#/{print $1}' \
-            "$HOME/.config/ssh_shorty/users.txt" 2>/dev/null)"})
-          compadd -S ' ' -- "${_users[@]}"
-        fi
         ;;
       --ping|-p)
         if (( CURRENT == 3 )); then
