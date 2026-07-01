@@ -1,3 +1,11 @@
+# Admin tool — distributed separately to admins only, never pushed to the public repo
+s-admin
+s-admin-watch
+s-admin-watch.service
+completion-admin.zsh
+completion-admin.bash
+install-admin.sh
+
 machines.txt
 *.log
 eventlog.txt
