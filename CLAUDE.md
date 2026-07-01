@@ -16,7 +16,7 @@
    git add <files> && git commit -m "..." && git push origin main
    ```
 
-3. **Tell the user** to run `exec zsh` after any completion change.
+3. **Always tell the user** to run `exec zsh` — say it every time, even if you think you already said it. Completions never activate until the shell is reloaded.
 
 ## File ownership — what goes where
 
@@ -50,20 +50,22 @@ There is **no enforcement** — anyone who runs `install-admin.sh` gets `s-admin
 ## When adding a new user command to `s`:
 
 - Add the `case` entry to `s`
-- Add `'--command:description'` to the `subcommands` array in `completion.zsh`
-- Add `--command` to the `subcommands` string in `completion.bash`
+- **Always** add `'--command:description'` to the `subcommands` array in `completion.zsh`
+- **Always** add `--command` to the `subcommands` string in `completion.bash`
 - Add tab-complete logic in both completion files (CURRENT==3 machine picker, etc.)
 - Add to the `usage()` function in `s`
 - Deploy: `cp s ~/.local/bin/s` + both completion files + `rm -f ~/.zcompdump*`
+- **Tell the user to run `exec zsh`**
 
 ## When adding a new admin command to `s-admin`:
 
 - Add the `case` entry to `s-admin`
-- Add `'--command:description'` to the `subcommands` array in `completion-admin.zsh`
-- Add `--command` to the `subcommands` string in `completion-admin.bash`
+- **Always** add `'--command:description'` to the `subcommands` array in `completion-admin.zsh`
+- **Always** add `--command` to the `subcommands` string in `completion-admin.bash`
 - Add tab-complete logic in both admin completion files
 - Add to the `_usage()` function in `s-admin`
 - Deploy: `cp s-admin ~/.local/bin/s-admin` + both admin completion files + `rm -f ~/.zcompdump*`
+- **Tell the user to run `exec zsh`**
 
 ## Deploying everything at once:
 
