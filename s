@@ -1,7 +1,7 @@
 #!/bin/bash
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 
-VERSION="20260708"
+VERSION="20260709"
 REPO_RAW="https://raw.githubusercontent.com/yadhusnair/ssh_shorty/main"
 
 MAPFILE="$HOME/.config/ssh_shorty/machines.txt"
@@ -710,20 +710,18 @@ _do_update() {
     if [[ -z "$_repo_dir" || ! -f "$_repo_dir/install.sh" ]]; then
         printf "Unexpected archive layout — aborted.\n"; return 1
     fi
-    # install.sh replaces this running script on disk — all code after this point
-    # must already be in memory (i.e. inside this function body).
     bash "$_repo_dir/install.sh" --update
-    # Sync favorites from team server if configured
+    # Sync favorites before handing off
     if [[ -n "$SYNC_HOST" ]]; then
         scp -q -o BatchMode=yes -o ConnectTimeout=5 \
             "${SYNC_HOST}:${FAVS_SYNC_REMOTE_PATH}" "$FAVS_FILE" 2>/dev/null \
             && printf "  ${GREEN}✓${RESET} favorites synced from %s\n" "$SYNC_HOST" \
             || true
     fi
-    printf '%s %s\n' "$(date +%s)" "$remote_ver" > "$UPDATE_CACHE"
-    printf "\n${GREEN}✓ Updated to v%s${RESET} — open a new shell tab to activate new completions\n" "$remote_ver"
-    # Exit here so bash never reads ;; or esac from the replaced file.
-    exit 0
+    # exec into the newly installed script to print the success message and exit.
+    # This replaces this process entirely so bash never reads ;; or esac from the
+    # replaced file at a stale byte offset.
+    exec "$HOME/.local/bin/s" --finish-update "$remote_ver"
 }
 
 # Extract SSH port from DEVICE_SSH_OPTS (defaults to 22)
@@ -2002,6 +2000,15 @@ case "$1" in
         _log_connection "$LAST_NICK" "$LAST_TARGET"
         shift  # drop the '-' arg so remaining args are extra ssh flags
         exec ssh "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" "$LAST_TARGET" "$@"
+        ;;
+
+    --finish-update)
+        _fuver="$2"
+        [[ -n "$_fuver" ]] && {
+            printf '%s %s\n' "$(date +%s)" "$_fuver" > "$UPDATE_CACHE"
+            printf "\n${GREEN}✓ Updated to v%s${RESET} — open a new shell tab to activate new completions\n" "$_fuver"
+        }
+        exit 0
         ;;
 
     -*)
