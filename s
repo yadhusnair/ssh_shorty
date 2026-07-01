@@ -1472,10 +1472,9 @@ case "$1" in
         TARGET=$(_apply_mac_resolution "$NICK" "$TARGET")
         ssh_cmd="ssh"
         for o in "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}"; do ssh_cmd+=" $o"; done
-        _blk_pid=""
-        _anim_enabled && _blk_pid=$(_block_spin_start "Downloading  ${NICK}:${REMOTE_PATH}  →  ${LOCAL_DEST}")
+        _dl_dest="${LOCAL_DEST}"; [[ "$LOCAL_DEST" == "." ]] && _dl_dest="$(pwd)"
+        _anim_enabled && _neon_trace "Downloading  ${NICK}:${REMOTE_PATH}  →  ${_dl_dest}"
         rsync -avP -e "$ssh_cmd" "$TARGET:$REMOTE_PATH" "$LOCAL_DEST"
-        [[ -n "$_blk_pid" ]] && _spinner_stop "$_blk_pid"
         ;;
 
     --view)
@@ -1559,10 +1558,8 @@ case "$1" in
         TARGET=$(_apply_mac_resolution "$NICK" "$TARGET")
         ssh_cmd="ssh"
         for o in "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}"; do ssh_cmd+=" $o"; done
-        _blk_pid=""
-        _anim_enabled && _blk_pid=$(_block_spin_start "Uploading  ${LOCAL_PATH}  →  ${NICK}:${REMOTE_PATH}")
+        _anim_enabled && _neon_trace "Uploading  ${LOCAL_PATH}  →  ${NICK}:${REMOTE_PATH}"
         rsync -avP -e "$ssh_cmd" "$LOCAL_PATH" "$TARGET:$REMOTE_PATH"
-        [[ -n "$_blk_pid" ]] && _spinner_stop "$_blk_pid"
         ;;
 
     --add|-a)
