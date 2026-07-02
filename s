@@ -773,28 +773,6 @@ _request_access() {
     fi
 }
 
-# Check for pending access requests; print a one-line notice if any exist.
-# Throttled to at most one check per 5 minutes; runs in background so it doesn't block.
-_check_pending_requests() {
-    [[ -z "$SYNC_HOST" ]] && return
-    local stamp="$CONFIG_DIR/.pending_check"
-    if [[ -f "$stamp" ]]; then
-        local _age; _age=$(( $(date +%s) - $(stat -c %Y "$stamp" 2>/dev/null || echo 0) ))
-        (( _age < 300 )) && return
-    fi
-    touch "$stamp" 2>/dev/null
-    local rdir; rdir=$(_sync_remote_dir)
-    (
-        local count
-        count=$(ssh -q -o BatchMode=yes -o ConnectTimeout=3 "$SYNC_HOST" \
-            "ls ~/${rdir}/pending_requests/*.req 2>/dev/null | wc -l" 2>/dev/null)
-        [[ -n "$count" && "$count" -gt 0 ]] && \
-            printf "${YELLOW}⚠ %d pending access request(s) — run: s-admin --pending-requests${RESET}\n" \
-                "$count" >&2
-    ) </dev/null &
-    disown $!
-}
-
 # Self-update logic — defined as a function so bash reads the entire body into
 # memory before install.sh replaces the running script on disk.
 _do_update() {
@@ -981,9 +959,6 @@ _dedup_mapfile "$MAPFILE"
 
 # Background pull — skipped for interactive file-edit commands to avoid clobbering open editor
 case "$1" in --edit|--fav) ;; *) _sync_bg ;; esac
-
-# Background admin notification — throttled to once per 5 minutes
-_check_pending_requests
 
 # Background update check — notifies on next run if newer version found
 _check_update
