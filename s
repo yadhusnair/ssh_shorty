@@ -46,6 +46,7 @@ fi
 # ── ControlMaster ──────────────────────────────────────────────────────────────
 # Reuse existing TCP connections — second connect to the same host is ~instant
 mkdir -p "$SSH_CTRL_DIR" 2>/dev/null
+chmod 700 "$SSH_CTRL_DIR" 2>/dev/null
 SSH_CTRL_OPTS=(-o ControlMaster=auto
                -o "ControlPath=${SSH_CTRL_DIR}/%h-%p-%r"
                -o ControlPersist=10m)
