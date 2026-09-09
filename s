@@ -2307,21 +2307,19 @@ case "$1" in
                         fi
                     fi
                     exit 1
-                elif grep -qiE "connection timed out|connection refused|no route to host|network is unreachable|could not resolve hostname" "$_pc_err" 2>/dev/null; then
-                    # Device genuinely unreachable — the real exec below has no
-                    # ConnectTimeout, so falling through here used to hang for
-                    # minutes instead of failing fast.
-                    rm -f "$_pc_err"
-                    if _anim_enabled; then
-                        _ora_fail "${NICK} (${TARGET}) is unreachable."
-                    else
-                        printf "${RED}%s (%s) is unreachable.${RESET}\n" "$NICK" "$TARGET"
-                    fi
-                    exit 1
                 fi
-                # Any other unexpected pre-check failure falls through to the real
-                # ssh below — e.g. password-only auth fails under BatchMode but
-                # could still succeed interactively.
+                # Anything else (unreachable, timed out, refused, no route,
+                # etc.) means the real ssh below — same target, but with no
+                # ConnectTimeout — would hit the identical problem and hang
+                # instead of failing fast. Fail here rather than guessing at
+                # every possible connection-error string ssh might print.
+                if _anim_enabled; then
+                    _ora_fail "Could not connect to ${NICK} (${TARGET})."
+                else
+                    printf "${RED}Could not connect to %s (%s).${RESET}\n" "$NICK" "$TARGET"
+                fi
+                rm -f "$_pc_err"
+                exit 1
             fi
             rm -f "$_pc_err"
             _anim_enabled && _ora_succeed "Connected" "●"
