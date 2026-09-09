@@ -414,7 +414,7 @@ usage() {
     printf "  s --status [prefix|@group]                  online/offline status\n"
     printf "  s --sysinfo [prefix|@group]                 live resource dashboard\n"
     printf "  s --watch [prefix|@group]                   live-refreshing fleet status\n"
-    printf "  s --run <nick|@group|--all> <cmd>           run command on device(s)\n"
+    printf "  s --run <cmd> <nick|@group|--all>           run command on device(s)\n"
     printf "  s --run-script <nick|@group> <file>         run local script remotely\n"
     printf "  s --tail <nick> <alias|/path>               tail a remote file\n"
     printf "  s --tunnel <nick> [local_port:]remote_port  open SSH tunnel\n"
@@ -1822,9 +1822,10 @@ case "$1" in
 
     --run)
         [[ -z "$2" || -z "$3" ]] && {
-            printf "Usage: s --run <nick|@group|--all> \"cmd\"\n"; exit 1; }
+            printf "Usage: s --run \"cmd\" <nick|@group|--all>\n"; exit 1; }
         _require_mapfile
-        spec="$2"; shift 2; cmd="$*"
+        shift
+        spec="${*: -1}"; cmd="${*:1:$#-1}"
         cmd=$(_expand_fav "$cmd")
 
         run_nicks=(); run_targets=()
@@ -1835,7 +1836,7 @@ case "$1" in
         [[ ${#run_nicks[@]} -eq 0 ]] && {
             printf "No devices found for: %s\n" "$spec"; exit 1; }
 
-        if [[ "${cmd}" == "--dry-run" || "${2:-}" == "--dry-run" ]]; then
+        if [[ "${cmd}" == "--dry-run" ]]; then
             printf "${BOLD}Dry run — targets that would receive: %s${RESET}\n" "$cmd"
             for i in "${!run_nicks[@]}"; do
                 _load_device_opts "${run_nicks[$i]}"

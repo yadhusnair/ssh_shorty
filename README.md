@@ -379,7 +379,7 @@ s --fav --remove docker_restart_mule                 # delete alias
 s --fav --edit                                       # open favorites.txt in $EDITOR
 ```
 
-Favorites are stored in `~/.config/ssh_shorty/favorites.txt` and synced to the team via `SYNC_HOST` automatically whenever you add or remove one. Tab-complete aliases with `s --run <nick> <TAB>`.
+Favorites are stored in `~/.config/ssh_shorty/favorites.txt` and synced to the team via `SYNC_HOST` automatically whenever you add or remove one. Tab-complete aliases with `s --run <TAB>`.
 
 ### Broadcast a local script
 

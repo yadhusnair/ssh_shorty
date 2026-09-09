@@ -155,9 +155,8 @@ _ssh_shorty_complete() {
                     COMPREPLY=( $(compgen -W "${machines[*]} ${groups[*]} --all" -- "$cur") )
                 fi
                 ;;
-            --run|--keydeploy|--close|-m)
-                [[ "$cword" -eq 2 ]] && _complete_nick_or_group "$cur"
-                if [[ "$first" == "--run" && "$cword" -eq 3 ]]; then
+            --run)
+                if [[ "$cword" -eq 2 ]]; then
                     local favs_file="$HOME/.config/ssh_shorty/favorites.txt"
                     local -a fav_aliases=()
                     [[ -f "$favs_file" ]] && mapfile -t fav_aliases < <(
@@ -171,7 +170,12 @@ _ssh_shorty_complete() {
                     else
                         COMPREPLY=( '""' )
                     fi
+                elif [[ "$cword" -eq 3 ]]; then
+                    _complete_nick_or_group "$cur"
                 fi
+                ;;
+            --keydeploy|--close|-m)
+                [[ "$cword" -eq 2 ]] && _complete_nick_or_group "$cur"
                 ;;
             --run-script)
                 if [[ "$cword" -eq 2 ]]; then

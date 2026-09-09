@@ -168,9 +168,8 @@ _ssh_shorty() {
           fi
         fi
         ;;
-      --run|--keydeploy|--close|-m)
-        (( CURRENT == 3 )) && _nick_or_group
-        if [[ "$first" == "--run" ]] && (( CURRENT == 4 )); then
+      --run)
+        if (( CURRENT == 3 )); then
           local favs_file="$HOME/.config/ssh_shorty/favorites.txt"
           local -a fav_aliases=()
           [[ -f "$favs_file" ]] && fav_aliases=(${(f)"$(awk 'NF>=3 && $2=="=" && $1!~/^#/{print $1}' "$favs_file" 2>/dev/null)"})
@@ -181,7 +180,12 @@ _ssh_shorty() {
             # No alias match — offer "" so user can type a one-off command
             compadd -Q -U -P '"' -S '"' -- ""
           fi
+        elif (( CURRENT == 4 )); then
+          _nick_or_group
         fi
+        ;;
+      --keydeploy|--close|-m)
+        (( CURRENT == 3 )) && _nick_or_group
         ;;
       --run-script)
         if (( CURRENT == 3 )); then
