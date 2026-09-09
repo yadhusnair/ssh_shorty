@@ -256,29 +256,40 @@ _block_spin_start() {
     printf '%d' $!
 }
 
-# Snap-style block progress bar for rsync transfers — shows the file currently
-# transferring with its own bar + eta (like `snap install`); each new file resets
-# the bar to 0%. `tr` is forced line-buffered, otherwise it batches rsync's \r-updates
-# and the bar only appears to jump once at the very end instead of live.
+# Snap-style block progress bar for rsync transfers — each file gets its own
+# bar + eta (like `snap install`) that stays on screen once done, with a blank
+# line before the first bar and between each finished file and the next one.
+# `tr` is forced line-buffered, otherwise it batches rsync's \r-updates and the
+# bar only appears to jump once at the very end instead of live.
 _snap_transfer() {
-    local w=28 pct rate eta filled k line status file=""
+    local w=28 pct rate eta tail filled k line status file="" file_num=0 total_files="" counter=""
     if ! _anim_enabled; then
         rsync -avP "$@"
         return $?
     fi
     _hide_cursor
+    printf '\n'
     rsync -av --partial --progress "$@" 2>&1 | stdbuf -oL tr '\r' '\n' | while IFS= read -r line; do
-        if [[ "$line" =~ ^[[:space:]]*[0-9][0-9,]*[[:space:]]+([0-9]+)%[[:space:]]+([0-9.]+[A-Za-z]+/s)[[:space:]]+([0-9:]+) ]]; then
-            pct="${BASH_REMATCH[1]}"; rate="${BASH_REMATCH[2]}"; eta="${BASH_REMATCH[3]}"
+        if [[ "$line" =~ ^[[:space:]]*[0-9][0-9,]*[[:space:]]+([0-9]+)%[[:space:]]+([0-9.]+[A-Za-z]+/s)[[:space:]]+([0-9:]+)(.*)$ ]]; then
+            pct="${BASH_REMATCH[1]}"; rate="${BASH_REMATCH[2]}"; eta="${BASH_REMATCH[3]}"; tail="${BASH_REMATCH[4]}"
+            [[ "$tail" =~ to-chk=[0-9]+/([0-9]+) ]] && total_files="${BASH_REMATCH[1]}"
+            counter=""
+            if [[ -n "$total_files" ]]; then
+                counter=" (${file_num}/${total_files})"
+            elif (( file_num > 0 )); then
+                counter=" (${file_num})"
+            fi
             filled=$(( pct * w / 100 ))
             _clear_line
             printf "${GREEN}["
             for (( k=0; k<filled; k++ )); do printf "█"; done
             for (( k=filled; k<w; k++ )); do printf "${DIM}░${RESET}${GREEN}"; done
-            printf "]${RESET} ${BOLD}%3d%%${RESET}  ${DIM}%-11s eta %-8s${RESET} %s" "$pct" "$rate" "$eta" "$file"
-        elif [[ -n "$line" && "$line" != *"incremental file list" && "$line" != "./" \
-                && "$line" != sent\ * && "$line" != "total size is"* ]]; then
+            printf "]${RESET} ${BOLD}%3d%%${RESET}${counter}  ${DIM}%-11s eta %-8s${RESET} %s" "$pct" "$rate" "$eta" "$file"
+            (( pct == 100 )) && printf '\n\n'
+        elif [[ -n "$line" && "$line" != *"incremental file list" && "$line" != sent\ * \
+                && "$line" != "total size is"* && "$line" != */ ]]; then
             file="$line"
+            (( file_num++ ))
         fi
     done
     status=${PIPESTATUS[0]}
