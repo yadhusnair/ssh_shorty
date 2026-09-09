@@ -757,6 +757,80 @@ _dedup_mapfile() {
         "$file" > "$TF" && mv "$TF" "$file" || rm -f "$TF"
 }
 
+# Table-style editing of machines.txt via visidata (vd), if installed and
+# stdin/stdout are a real terminal. Exports to a normalized TSV, lets the
+# user browse/edit it as a spreadsheet, then rebuilds machines.txt from the
+# result. Comment/blank lines are preserved verbatim (vd never sees them).
+# An EXTRA column catches any token that isn't a recognized field (nick,
+# target, port=/key=/forward=/mac=, #tag) so nothing is silently dropped —
+# e.g. a stray second target some entries carry that nothing else reads.
+_edit_table() {
+    local tsv comments newmap before after
+    tsv=$(mktemp "$CONFIG_DIR/.vdedit.XXXXXX.tsv")
+    comments=$(mktemp "$CONFIG_DIR/.vdedit.XXXXXX.comments")
+    trap 'rm -f "$tsv" "$comments" "${newmap:-}"' RETURN
+    trap 'rm -f "$tsv" "$comments" "${newmap:-}"; exit 130' INT TERM
+
+    awk 'NF==0 || $1 ~ /^#/' "$MAPFILE" > "$comments"
+
+    awk 'BEGIN{OFS="\t"; print "NICK","TARGET","PORT","KEY","FORWARD","MAC","TAGS","EXTRA"}
+        NF>=2 && $1 !~ /^#/ {
+            nick=$1; target=$2; port=""; key=""; fwd=""; mac=""; tags=""; extra=""
+            for (i=3;i<=NF;i++){
+                f=$i
+                if (f ~ /^port=/)      { sub(/^port=/,"",f); port=f }
+                else if (f ~ /^key=/)  { sub(/^key=/,"",f); key=f }
+                else if (f ~ /^mac=/)  { sub(/^mac=/,"",f); mac=f }
+                else if (f ~ /^forward=/) { sub(/^forward=/,"",f); fwd=(fwd==""?f:fwd","f) }
+                else if (f ~ /^#/)     { sub(/^#/,"",f); tags=(tags==""?f:tags","f) }
+                else                   { extra=(extra==""?f:extra" "f) }
+            }
+            print nick, target, port, key, fwd, mac, tags, extra
+        }' "$MAPFILE" > "$tsv"
+
+    before=$(cksum < "$tsv")
+
+    printf "${DIM}Opening fleet as a table — Ctrl+S to save, q to quit (asks to confirm if unsaved).${RESET}\n"
+    vd -f tsv --quitguard --overwrite y "$tsv"
+
+    after=$(cksum < "$tsv")
+    if [[ "$before" == "$after" ]]; then
+        printf "No changes.\n"
+        return 0
+    fi
+
+    newmap=$(mktemp "$CONFIG_DIR/.vdedit.XXXXXX.new")
+    awk -F'\t' 'NR==1{next}
+        {
+            nick=$1; target=$2; port=$3; key=$4; fwd=$5; mac=$6; tags=$7; extra=$8
+            gsub(/^[ \t]+|[ \t]+$/,"",nick); gsub(/^[ \t]+|[ \t]+$/,"",target)
+            if (nick=="" || target=="") next
+            line=nick" "target
+            if (port!="") line=line" port="port
+            if (key!="")  line=line" key="key
+            if (mac!="")  line=line" mac="mac
+            if (fwd!="") {
+                n=split(fwd,fa,","); for(i=1;i<=n;i++) if(fa[i]!="") line=line" forward="fa[i]
+            }
+            if (extra!="") line=line" "extra
+            if (tags!="") {
+                n=split(tags,ta,","); for(i=1;i<=n;i++) if(ta[i]!="") line=line" #"ta[i]
+            }
+            print line
+        }' "$tsv" > "$newmap"
+
+    if [[ ! -s "$newmap" ]]; then
+        printf "${RED}Table edit produced no valid devices — aborting, machines.txt left unchanged.${RESET}\n"
+        return 1
+    fi
+
+    cat "$comments" >> "$newmap"
+    mv "$newmap" "$MAPFILE"
+    _dedup_mapfile "$MAPFILE"
+    printf "${GREEN}Fleet updated.${RESET}\n"
+    _sync_push
+}
+
 # ── User tracking & access control helpers ────────────────────────────────────
 
 _current_user() { printf '%s' "$SHORTY_USER"; }
@@ -2103,7 +2177,12 @@ case "$1" in
         ;;
 
     --edit|-e)
-        _require_mapfile; ${EDITOR:-nano} "$MAPFILE"
+        _require_mapfile
+        if command -v vd &>/dev/null && [[ -t 0 && -t 1 ]]; then
+            _edit_table
+        else
+            ${EDITOR:-nano} "$MAPFILE"
+        fi
         ;;
 
     --paths)
