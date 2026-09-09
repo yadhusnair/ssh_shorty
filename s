@@ -256,6 +256,37 @@ _block_spin_start() {
     printf '%d' $!
 }
 
+# Snap-style block progress bar for rsync transfers (single overall bar + eta,
+# like `snap install` / apt-get progress) instead of rsync's scrolling per-file output.
+_snap_transfer() {
+    local w=28 pct rate eta filled k line status
+    if ! _anim_enabled; then
+        rsync -avP "$@"
+        return $?
+    fi
+    _hide_cursor
+    rsync -a --partial --info=progress2 "$@" 2>&1 | while IFS= read -r line; do
+        if [[ "$line" =~ ([0-9]+)%[[:space:]]+([0-9.]+[A-Za-z]+/s)[[:space:]]+([0-9:]+) ]]; then
+            pct="${BASH_REMATCH[1]}"; rate="${BASH_REMATCH[2]}"; eta="${BASH_REMATCH[3]}"
+            filled=$(( pct * w / 100 ))
+            _clear_line
+            printf "${GREEN}["
+            for (( k=0; k<filled; k++ )); do printf "█"; done
+            for (( k=filled; k<w; k++ )); do printf "${DIM}░${RESET}${GREEN}"; done
+            printf "]${RESET} ${BOLD}%3d%%${RESET}  ${DIM}%-11s eta %s${RESET}" "$pct" "$rate" "$eta"
+        fi
+    done
+    status=${PIPESTATUS[0]}
+    _clear_line
+    if (( status == 0 )); then
+        printf "${GREEN}[%s]${RESET} ${GREEN}100%% done${RESET}\n" "$(printf '█%.0s' $(seq 1 $w))"
+    else
+        printf "${RED}transfer failed${RESET}\n"
+    fi
+    _show_cursor
+    return "$status"
+}
+
 trap '[[ $_CURSOR_HIDDEN -eq 1 ]] && printf '\''\033[?25h'\''' EXIT INT TERM
 
 # ── Core helpers ───────────────────────────────────────────────────────────────
@@ -1450,7 +1481,7 @@ case "$1" in
         for o in "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}"; do ssh_cmd+=" $o"; done
         _dl_dest="${LOCAL_DEST}"; [[ "$LOCAL_DEST" == "." ]] && _dl_dest="$(pwd)"
         _anim_enabled && _neon_trace "Downloading  ${NICK}:${REMOTE_PATH}  →  ${_dl_dest}"
-        rsync -avP -e "$ssh_cmd" "$TARGET:$REMOTE_PATH" "$LOCAL_DEST"
+        _snap_transfer -e "$ssh_cmd" "$TARGET:$REMOTE_PATH" "$LOCAL_DEST"
         ;;
 
     --view)
@@ -1535,7 +1566,7 @@ case "$1" in
         ssh_cmd="ssh"
         for o in "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}"; do ssh_cmd+=" $o"; done
         _anim_enabled && _neon_trace "Uploading  ${LOCAL_PATH}  →  ${NICK}:${REMOTE_PATH}"
-        rsync -avP -e "$ssh_cmd" "$LOCAL_PATH" "$TARGET:$REMOTE_PATH"
+        _snap_transfer -e "$ssh_cmd" "$LOCAL_PATH" "$TARGET:$REMOTE_PATH"
         ;;
 
     --add|-a)
@@ -2155,7 +2186,7 @@ case "$1" in
             for o in "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}"; do ssh_cmd+=" $o"; done
             _anim_enabled && _glitch_line \
                 "Pulling  ${NICK}:${REMOTE_PATH}  →  ${LOCAL_DEST}" "${BOLD}${GREEN}"
-            rsync -avP -e "$ssh_cmd" "$TARGET:$REMOTE_PATH" "$LOCAL_DEST"
+            _snap_transfer -e "$ssh_cmd" "$TARGET:$REMOTE_PATH" "$LOCAL_DEST"
 
         # rsync push: /local nick:/path
         elif [[ "$2" == *:* ]]; then
@@ -2168,7 +2199,7 @@ case "$1" in
             for o in "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}"; do ssh_cmd+=" $o"; done
             _anim_enabled && _glitch_line \
                 "Pushing  ${LOCAL_PATH}  →  ${NICK}:${REMOTE_PATH}" "${BOLD}${GREEN}"
-            rsync -avP -e "$ssh_cmd" "$LOCAL_PATH" "$TARGET:$REMOTE_PATH"
+            _snap_transfer -e "$ssh_cmd" "$LOCAL_PATH" "$TARGET:$REMOTE_PATH"
 
         # SSH: nick [extra ssh args]
         else
