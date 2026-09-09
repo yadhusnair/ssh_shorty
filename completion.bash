@@ -149,9 +149,10 @@ _ssh_shorty_complete() {
                 fi
                 ;;
             --status|--list|--watch|--sysinfo)
-                if [[ "$cword" -eq 2 && "$cur" == @* ]]; then
-                    local -a groups; mapfile -t groups < <(_get_groups)
-                    COMPREPLY=( $(compgen -W "${groups[*]}" -- "$cur") )
+                if [[ "$cword" -eq 2 ]]; then
+                    local -a groups
+                    mapfile -t groups < <(_get_groups)
+                    COMPREPLY=( $(compgen -W "${machines[*]} ${groups[*]} --all" -- "$cur") )
                 fi
                 ;;
             --run|--keydeploy|--close|-m)

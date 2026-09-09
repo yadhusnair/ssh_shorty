@@ -284,7 +284,7 @@ _ora_spin_stop() {
     _clear_line
 }
 
-_ora_succeed() { _clear_line; printf "${GREEN}${2:-✔}${RESET} %s\n" "$1"; }
+_ora_succeed() { _clear_line; printf "${GREEN}${2:-●}${RESET} %s\n" "$1"; }
 _ora_fail()    { _clear_line; printf "${RED}✖${RESET} %s\n" "$1"; }
 
 # Discards any input typed while a spinner was running (e.g. arrow keys
@@ -1896,14 +1896,14 @@ case "$1" in
             _pr=$(_apply_mac_resolution "${_ping_nicks[0]}" "${_ping_targets[0]}")
             HOST="${_pr#*@}"
             _pp=$(_get_ssh_port)
-            _radar_pid=""
-            _anim_enabled && _radar_pid=$(_radar_spin_start "${_ping_nicks[0]}  ${HOST}:${_pp}")
+            _ping_spin=""
+            _anim_enabled && _ping_spin=$(_ora_spin_start "Pinging ${_ping_nicks[0]}  ${HOST}:${_pp}")
             if nc -z -w2 "$HOST" "$_pp" &>/dev/null; then
-                [[ -n "$_radar_pid" ]] && _spinner_stop "$_radar_pid"
+                [[ -n "$_ping_spin" ]] && _ora_spin_stop "$_ping_spin"
                 printf "${CYAN}◉${RESET}  %-18s ${DIM}%s:%s${RESET}  ${GREEN}reachable${RESET}\n" \
                     "${_ping_nicks[0]}" "$HOST" "$_pp"
             else
-                [[ -n "$_radar_pid" ]] && _spinner_stop "$_radar_pid"
+                [[ -n "$_ping_spin" ]] && _ora_spin_stop "$_ping_spin"
                 printf "${CYAN}◌${RESET}  %-18s ${DIM}%s:%s${RESET}  ${RED}unreachable${RESET}\n" \
                     "${_ping_nicks[0]}" "$HOST" "$_pp"
                 exit 1
@@ -2322,7 +2322,7 @@ case "$1" in
                 exit 1
             fi
             rm -f "$_pc_err"
-            _anim_enabled && _ora_succeed "Connected" "●"
+            _anim_enabled && _ora_succeed "Connected"
             _log_remote_connection "$NICK" "$TARGET"
             _flush_stdin
             exec ssh "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" "$TARGET" "$@"

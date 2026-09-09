@@ -159,7 +159,14 @@ _ssh_shorty() {
         (( CURRENT == 3 )) && _describe 'machine' machines
         ;;
       --status|--list|--watch|--sysinfo)
-        (( CURRENT == 3 )) && compadd -S ' ' -- "${groups[@]}"
+        if (( CURRENT == 3 )); then
+          if [[ "$PREFIX" == @* ]]; then
+            compadd -Q -S ' ' -- "${groups[@]}" '--all'
+          else
+            compadd -S ' ' -- "${machines[@]}"
+            compadd -Q -S ' ' -- "${groups[@]}"
+          fi
+        fi
         ;;
       --run|--keydeploy|--close|-m)
         (( CURRENT == 3 )) && _nick_or_group
