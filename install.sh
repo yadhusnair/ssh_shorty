@@ -13,6 +13,45 @@ BASH_COMPLETIONS_DIR="$HOME/.local/share/bash-completion/completions"
 UPDATE_MODE=false
 [[ "${1:-}" == "--update" ]] && UPDATE_MODE=true
 
+# Optional: visidata (vd) lets 's --edit' open the fleet as an editable
+# spreadsheet-style table instead of a plain text editor. Skips silently if
+# already installed; never fails the rest of the install/update if it can't.
+offer_visidata() {
+    command -v vd &>/dev/null && return 0
+
+    echo "  visidata (vd) lets 's --edit' open your fleet as an editable"
+    echo "  spreadsheet-style table instead of a plain text editor."
+    _vd_resp="n"
+    if [[ -t 0 ]]; then
+        printf "  Install visidata now? [Y/n] "
+        read -r _vd_resp
+    fi
+    if [[ "$_vd_resp" =~ ^[Nn] ]]; then
+        echo "  Skipping visidata — 's --edit' will keep using \$EDITOR."
+        return 0
+    fi
+
+    if command -v pip3 &>/dev/null; then
+        echo "  Installing visidata via pip3..."
+        pip3 install --user --quiet visidata \
+            && echo "  Installed: visidata" \
+            || echo "  visidata install failed — 's --edit' will keep using \$EDITOR."
+    elif command -v pip &>/dev/null; then
+        echo "  Installing visidata via pip..."
+        pip install --user --quiet visidata \
+            && echo "  Installed: visidata" \
+            || echo "  visidata install failed — 's --edit' will keep using \$EDITOR."
+    elif command -v brew &>/dev/null; then
+        echo "  Installing visidata via brew..."
+        brew install visidata \
+            && echo "  Installed: visidata" \
+            || echo "  visidata install failed — 's --edit' will keep using \$EDITOR."
+    else
+        echo "  Could not find pip3/pip/brew — install visidata manually later:"
+        echo "    pip install --user visidata"
+    fi
+}
+
 if [[ "$UPDATE_MODE" == true ]]; then
     echo "Applying update..."
     echo ""
@@ -39,6 +78,8 @@ if [[ "$UPDATE_MODE" == true ]]; then
         echo "  ✓ completion.bash (cfg)"
     fi
 
+    echo ""
+    offer_visidata
     echo ""
     echo "Done. Open a new shell tab to activate new completions."
     exit 0
@@ -316,6 +357,10 @@ for RC in "$HOME/.bashrc" "$HOME/.zshrc"; do
         echo "  Updated:   $RC (PATH)"
     fi
 done
+
+# ── Optional: visidata for the 's --edit' table view ──────────────────────────
+echo ""
+offer_visidata
 
 echo ""
 echo "Done."
