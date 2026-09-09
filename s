@@ -256,6 +256,37 @@ _block_spin_start() {
     printf '%d' $!
 }
 
+# Ora-style elegant braille spinner (ora's actual default frame set:
+# ⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏) for polling / connecting — a plain "‹dot› message" line
+# instead of the matrix/block themes used elsewhere.
+_ora_spin_start() {
+    local msg="$1"
+    ( exec > /dev/tty 2>/dev/null
+      local -a frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+      local n=${#frames[@]} i=0
+      while true; do
+          _clear_line
+          printf "${CYAN}%s${RESET} %s" "${frames[$(( i % n ))]}" "$msg"
+          i=$(( i + 1 ))
+          sleep 0.08
+      done
+    ) &
+    printf '%d' $!
+}
+
+_ora_spin_stop() {
+    # $1 is a grandchild (started inside a $(...) command-substitution subshell
+    # that has since exited), not a direct child, so `wait` can't actually block
+    # on it — poll with kill -0 instead, otherwise a straggling frame can still
+    # land after our clear and corrupt the next line we print.
+    kill "$1" 2>/dev/null
+    while kill -0 "$1" 2>/dev/null; do sleep 0.01; done
+    _clear_line
+}
+
+_ora_succeed() { _clear_line; printf "${GREEN}✔${RESET} %s\n" "$1"; }
+_ora_fail()    { _clear_line; printf "${RED}✖${RESET} %s\n" "$1"; }
+
 # Snap-style block progress bar for rsync transfers — each file gets its own
 # bar + eta (like `snap install`) that stays on screen once done, with a blank
 # line before the first bar and between each finished file and the next one.
@@ -1901,14 +1932,11 @@ case "$1" in
         HOST="${TARGET#*@}"
         POLL_PORT=$(_get_ssh_port)
 
-        if _anim_enabled; then
-            _matrix_header "[ WAITING FOR ${NICK^^} ]"
-        fi
-
         _hide_cursor
         trap '_show_cursor; printf "\n"; exit 130' INT TERM
 
         start_ts=$SECONDS
+        _poll_frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
 
         while true; do
             # nc check in background so we can animate while waiting
@@ -1917,17 +1945,13 @@ case "$1" in
 
             frame=0
             while kill -0 "$nc_pid" 2>/dev/null; do
-                frame=$(( frame + 1 ))
                 elapsed=$(( SECONDS - start_ts ))
                 if _anim_enabled; then
                     _clear_line
-                    bar=""
-                    for (( j=0; j<12; j++ )); do
-                        bar+="${MCHARS:$(( (frame + j*2) % ${#MCHARS} )):1}"
-                    done
-                    printf '%s' "${GREEN}[${bar}]${RESET} ${DIM}waiting for${RESET} ${BOLD}${NICK}${RESET}  ${DIM}${HOST}  ${elapsed}s${RESET}"
+                    printf '%s' "${CYAN}${_poll_frames[$(( frame % 10 ))]}${RESET}  ${DIM}waiting for${RESET} ${BOLD}${NICK}${RESET}  ${DIM}${HOST}  ${elapsed}s${RESET}"
                 fi
-                sleep 0.055
+                frame=$(( frame + 1 ))
+                sleep 0.08
             done
 
             wait "$nc_pid"
@@ -1935,7 +1959,7 @@ case "$1" in
                 _clear_line
                 _show_cursor
                 if _anim_enabled; then
-                    _glitch_line "● ${NICK} is online  →  ${TARGET}" "${BOLD}${GREEN}"
+                    _ora_succeed "${BOLD}${NICK}${RESET} is online  ${DIM}→ ${TARGET}${RESET}"
                 else
                     printf "${GREEN}● %s is online${RESET} → %s\n" "$NICK" "$TARGET"
                 fi
@@ -1946,7 +1970,7 @@ case "$1" in
             if [[ $_poll_timeout -gt 0 ]] && (( SECONDS - start_ts >= _poll_timeout )); then
                 _clear_line
                 _show_cursor
-                printf "${RED}✗ Timed out waiting for %s after %ds${RESET}\n" "$NICK" "$_poll_timeout"
+                _ora_fail "Timed out waiting for ${NICK} after ${_poll_timeout}s"
                 exit 1
             fi
         done
@@ -2237,22 +2261,29 @@ case "$1" in
             _load_device_opts "$NICK"
             TARGET=$(_apply_mac_resolution "$NICK" "$TARGET")
             
-            if _anim_enabled; then
-                _neon_trace "Connecting (${TARGET})"
-            else
-                printf "${DIM}Connecting (%s)${RESET}\n" "$TARGET"
-            fi
             _log_connection "$NICK" "$TARGET"
             # BatchMode pre-check: detects missing key access before SSH can fall
             # through to a password prompt. On success, also seeds the ControlMaster
             # socket so the real connect below is near-instant.
             _pc_err=$(mktemp "$CONFIG_DIR/.ssherr.XXXXXX")
-            if ! ssh -o BatchMode=yes -o ConnectTimeout=5 \
+            if _anim_enabled; then
+                _conn_spin=$(_ora_spin_start "Connecting (${TARGET})")
+            else
+                printf "${DIM}Connecting (%s)${RESET}\n" "$TARGET"
+            fi
+            _pc_status=0
+            ssh -o BatchMode=yes -o ConnectTimeout=5 \
                     "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" "$TARGET" true \
-                    2>"$_pc_err"; then
+                    2>"$_pc_err" || _pc_status=1
+            [[ -n "${_conn_spin:-}" ]] && _ora_spin_stop "$_conn_spin"
+            if (( _pc_status != 0 )); then
                 if grep -qi "permission denied" "$_pc_err" 2>/dev/null; then
                     rm -f "$_pc_err"
-                    printf "\n${YELLOW}No key access to '%s'.${RESET}\n" "$NICK"
+                    if _anim_enabled; then
+                        _ora_fail "No key access to '${NICK}'."
+                    else
+                        printf "${YELLOW}No key access to '%s'.${RESET}\n" "$NICK"
+                    fi
                     if [[ -t 0 ]]; then
                         printf "Request access from admin? [y/N] "
                         read -r _acc_resp
@@ -2264,6 +2295,7 @@ case "$1" in
                 fi
             fi
             rm -f "$_pc_err"
+            _anim_enabled && _ora_succeed "Connected"
             _log_remote_connection "$NICK" "$TARGET"
             exec ssh "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" "$TARGET" "$@"
         fi
