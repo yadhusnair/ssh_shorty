@@ -256,30 +256,35 @@ _block_spin_start() {
     printf '%d' $!
 }
 
-# Snap-style block progress bar for rsync transfers (single overall bar + eta,
-# like `snap install` / apt-get progress) instead of rsync's scrolling per-file output.
+# Snap-style block progress bar for rsync transfers — shows the file currently
+# transferring with its own bar + eta (like `snap install`); each new file resets
+# the bar to 0%. `tr` is forced line-buffered, otherwise it batches rsync's \r-updates
+# and the bar only appears to jump once at the very end instead of live.
 _snap_transfer() {
-    local w=28 pct rate eta filled k line status
+    local w=28 pct rate eta filled k line status file=""
     if ! _anim_enabled; then
         rsync -avP "$@"
         return $?
     fi
     _hide_cursor
-    rsync -a --partial --info=progress2 "$@" 2>&1 | while IFS= read -r line; do
-        if [[ "$line" =~ ([0-9]+)%[[:space:]]+([0-9.]+[A-Za-z]+/s)[[:space:]]+([0-9:]+) ]]; then
+    rsync -av --partial --progress "$@" 2>&1 | stdbuf -oL tr '\r' '\n' | while IFS= read -r line; do
+        if [[ "$line" =~ ^[[:space:]]*[0-9][0-9,]*[[:space:]]+([0-9]+)%[[:space:]]+([0-9.]+[A-Za-z]+/s)[[:space:]]+([0-9:]+) ]]; then
             pct="${BASH_REMATCH[1]}"; rate="${BASH_REMATCH[2]}"; eta="${BASH_REMATCH[3]}"
             filled=$(( pct * w / 100 ))
             _clear_line
             printf "${GREEN}["
             for (( k=0; k<filled; k++ )); do printf "█"; done
             for (( k=filled; k<w; k++ )); do printf "${DIM}░${RESET}${GREEN}"; done
-            printf "]${RESET} ${BOLD}%3d%%${RESET}  ${DIM}%-11s eta %s${RESET}" "$pct" "$rate" "$eta"
+            printf "]${RESET} ${BOLD}%3d%%${RESET}  ${DIM}%-11s eta %-8s${RESET} %s" "$pct" "$rate" "$eta" "$file"
+        elif [[ -n "$line" && "$line" != *"incremental file list" && "$line" != "./" \
+                && "$line" != sent\ * && "$line" != "total size is"* ]]; then
+            file="$line"
         fi
     done
     status=${PIPESTATUS[0]}
     _clear_line
     if (( status == 0 )); then
-        printf "${GREEN}[%s]${RESET} ${GREEN}100%% done${RESET}\n" "$(printf '█%.0s' $(seq 1 $w))"
+        printf "${GREEN}done${RESET}\n"
     else
         printf "${RED}transfer failed${RESET}\n"
     fi
