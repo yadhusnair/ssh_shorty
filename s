@@ -1161,7 +1161,10 @@ case "$1" in
         watch_filter="${2-}"
         watch_interval=5
 
-        trap '_show_cursor; printf "\n"; exit 0' INT TERM
+        # Kill the ping-sweep spinner too — it's a detached background job, so
+        # without this it survives as an orphan and keeps printing frames to
+        # the tty forever after this exits.
+        trap '_show_cursor; [[ -n "${_watch_spin:-}" ]] && kill "$_watch_spin" 2>/dev/null; printf "\n"; exit 0' INT TERM
         _hide_cursor
 
         while true; do
@@ -1900,6 +1903,9 @@ case "$1" in
             HOST="${_pr#*@}"
             _pp=$(_get_ssh_port)
             _ping_spin=""
+            # Background spinner jobs ignore SIGINT by default, so without this
+            # trap Ctrl+C leaves it running as an orphan, printing frames forever.
+            trap '_show_cursor; [[ -n "${_ping_spin:-}" ]] && kill "$_ping_spin" 2>/dev/null; exit 130' INT TERM
             _anim_enabled && _ping_spin=$(_ora_spin_start "Pinging ${_ping_nicks[0]}  ${HOST}:${_pp}")
             if nc -z -w2 "$HOST" "$_pp" &>/dev/null; then
                 [[ -n "$_ping_spin" ]] && _ora_spin_stop "$_ping_spin"
@@ -2284,6 +2290,9 @@ case "$1" in
             # through to a password prompt. On success, also seeds the ControlMaster
             # socket so the real connect below is near-instant.
             _pc_err=$(mktemp "$CONFIG_DIR/.ssherr.XXXXXX")
+            # Background spinner jobs ignore SIGINT by default, so without this
+            # trap Ctrl+C leaves it running as an orphan, printing frames forever.
+            trap '_show_cursor; [[ -n "${_conn_spin:-}" ]] && kill "$_conn_spin" 2>/dev/null; exit 130' INT TERM
             if _anim_enabled; then
                 _conn_spin=$(_ora_spin_start "Connecting (${TARGET})")
             else
