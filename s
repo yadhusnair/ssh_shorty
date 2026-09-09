@@ -499,12 +499,42 @@ _sync_push() {
 # Expand a single-word alias to its full command (returns key unchanged if no match)
 _expand_fav() {
     local key="$1"
-    [[ "$key" == *' '* || ! -f "$FAVS_FILE" ]] && { printf '%s' "$key"; return; }
-    local result
-    result=$(awk -v k="$key" 'NF >= 3 && $1 == k && $2 == "=" {
-        $1=""; $2=""; gsub(/^ +/, ""); print; exit
-    }' "$FAVS_FILE" 2>/dev/null)
-    printf '%s' "${result:-$key}"
+    [[ -f "$FAVS_FILE" ]] || { printf '%s' "$key"; return; }
+
+    # Exact match against a plain (non-parameterized) favorite — unchanged
+    # from before; only tried when $key has no space, since a parameterized
+    # alias is always "<alias> <value>" (two+ words).
+    if [[ "$key" != *' '* ]]; then
+        local result
+        result=$(awk -v k="$key" 'NF >= 3 && $1 == k && $2 == "=" && $0 !~ / #var / {
+            $1=""; $2=""; gsub(/^ +/, ""); print; exit
+        }' "$FAVS_FILE" 2>/dev/null)
+        [[ -n "$result" ]] && { printf '%s' "$result"; return; }
+    fi
+
+    # Parameterized favorite: first word of $key is the alias, the rest is
+    # the value to splice in before/after its fixed command.
+    local first="${key%% *}" line
+    line=$(awk -v k="$first" 'NF >= 3 && $1 == k && $2 == "=" && $0 ~ / #var / {print; exit}' "$FAVS_FILE" 2>/dev/null)
+    if [[ -n "$line" ]]; then
+        _fav_parse_line "$line"
+        local value=""
+        [[ "$key" != "$first" ]] && value="${key#* }"
+        if [[ -z "$value" ]]; then
+            printf "${YELLOW}'%s' needs a value for '%s' — e.g. s --run %s <%s> <device>${RESET}\n" \
+                "$first" "$FAV_VAR" "$first" "$FAV_VAR" >&2
+            printf '%s' "$key"
+            return
+        fi
+        if [[ "$FAV_POS" == before ]]; then
+            printf '%s %s' "$value" "$FAV_CMD"
+        else
+            printf '%s %s' "$FAV_CMD" "$value"
+        fi
+        return
+    fi
+
+    printf '%s' "$key"
 }
 
 # Push favorites.txt only (called after --fav adds/removes)
@@ -1011,30 +1041,72 @@ _wt_edit_paths() {
 }
 
 # ── whiptail menu/form editor for favorites.txt ────────────────────────────────
-# Format: <alias> = <command>. COMMAND is everything after the first " = ",
-# taken via bash parameter expansion (not awk $0-after-clearing-a-field,
-# which silently mangles internal spaces — see machines.txt's history).
+# Format: <alias> = <command> [#var <name> <before|after>]. COMMAND (and the
+# #var suffix) are taken via bash parameter expansion on the raw line (not awk
+# $0-after-clearing-a-field, which silently mangles internal spaces — see
+# machines.txt's history). #var marks a parameterized favorite: <name> is just
+# a label shown in prompts/lists, <before|after> says where the value the user
+# supplies at run time gets concatenated relative to <command>.
+
+# Parses one favorites.txt line into FAV_ALIAS/FAV_CMD/FAV_VAR/FAV_POS
+# (FAV_VAR and FAV_POS are empty for a plain, non-parameterized favorite).
+_fav_parse_line() {
+    local line="$1" rest
+    FAV_ALIAS="${line%% *}"
+    rest="${line#* = }"
+    if [[ "$rest" == *" #var "* ]]; then
+        FAV_CMD="${rest% #var *}"
+        local meta="${rest#* #var }"
+        FAV_VAR="${meta%% *}"
+        FAV_POS="${meta#* }"
+    else
+        FAV_CMD="$rest"
+        FAV_VAR=""
+        FAV_POS=""
+    fi
+}
 
 _wt_favs_get_command() {
     local alias="$1" line
     line=$(awk -v a="$alias" '$1==a && $2=="="{print;exit}' "$FAVS_FILE")
-    printf '%s' "${line#* = }"
+    _fav_parse_line "$line"
+}
+
+# Prompts for an optional variable name + before/after position, reusing
+# $cur_var/$cur_pos (if set) as defaults. Sets NEW_VAR/NEW_POS, or clears
+# both if the user leaves the variable name blank. Returns 1 on Esc/Cancel.
+_wt_prompt_fav_var() {
+    NEW_VAR=$(whiptail --title "$1" \
+        --inputbox "Variable name (optional — e.g. filename). Leave blank for none:" \
+        10 70 "${cur_var:-}" 3>&1 1>&2 2>&3) || return 1
+    if [[ -z "$NEW_VAR" ]]; then
+        NEW_POS=""
+        return 0
+    fi
+    NEW_POS=$(whiptail --title "$1" --menu "Where does the value go relative to the command?" 12 60 2 \
+        after  "After the command  (command  <value>)" \
+        before "Before the command  (<value>  command)" \
+        3>&1 1>&2 2>&3) || return 1
 }
 
 _wt_edit_fav() {
-    local alias="$1" cur new
-    cur=$(_wt_favs_get_command "$alias")
-    new=$(whiptail --title "Edit: $alias" --inputbox "Command:" 10 78 "$cur" 3>&1 1>&2 2>&3) || return 1
+    local alias="$1" new cur_var cur_pos
+    _wt_favs_get_command "$alias"
+    cur_var="$FAV_VAR"; cur_pos="$FAV_POS"
+    new=$(whiptail --title "Edit: $alias" --inputbox "Command:" 10 78 "$FAV_CMD" 3>&1 1>&2 2>&3) || return 1
     if [[ -z "$new" ]]; then
         whiptail --msgbox "Command can't be empty." 8 50
         return 1
     fi
-    _inplace_edit_file "$FAVS_FILE" awk -v a="$alias" -v c="$new" \
-        '$1==a && $2=="="{print a" = "c;next}{print}' "$FAVS_FILE"
+    _wt_prompt_fav_var "Edit: $alias" || return 1
+    local line="$alias = $new"
+    [[ -n "$NEW_VAR" ]] && line="$line #var $NEW_VAR $NEW_POS"
+    _inplace_edit_file "$FAVS_FILE" awk -v a="$alias" -v newline="$line" \
+        '$1==a && $2=="="{print newline;next}{print}' "$FAVS_FILE"
 }
 
 _wt_add_fav() {
-    local alias cmd
+    local alias cmd cur_var=""
     alias=$(whiptail --title "Add favorite" --inputbox "Alias name:" 10 60 "" 3>&1 1>&2 2>&3) || return 1
     [[ -z "$alias" ]] && return 1
     if awk -v a="$alias" '$1==a && $2=="="{f=1}END{exit !f}' "$FAVS_FILE" 2>/dev/null; then
@@ -1046,7 +1118,10 @@ _wt_add_fav() {
         whiptail --msgbox "Command can't be empty." 8 50
         return 1
     fi
-    printf '%s = %s\n' "$alias" "$cmd" >> "$FAVS_FILE"
+    _wt_prompt_fav_var "Add: $alias" || return 1
+    local line="$alias = $cmd"
+    [[ -n "$NEW_VAR" ]] && line="$line #var $NEW_VAR $NEW_POS"
+    printf '%s\n' "$line" >> "$FAVS_FILE"
 }
 
 _wt_delete_fav() {
@@ -1058,13 +1133,14 @@ _wt_delete_fav() {
 _wt_pick_fav() {
     local prompt="$1"
     local -a items=()
-    local line alias rest
+    local line desc
     while IFS= read -r line; do
         [[ -z "$line" || "$line" == '#'* ]] && continue
-        alias="${line%% *}"
-        [[ "$line" == "$alias = "* ]] || continue
-        rest="${line#* = }"
-        items+=("$alias" "$rest")
+        [[ "$line" == *" = "* ]] || continue
+        _fav_parse_line "$line"
+        desc="$FAV_CMD"
+        [[ -n "$FAV_VAR" ]] && desc="$desc  [+${FAV_VAR} ${FAV_POS}]"
+        items+=("$FAV_ALIAS" "$desc")
     done < "$FAVS_FILE"
     if [[ ${#items[@]} -eq 0 ]]; then
         whiptail --msgbox "No favorites saved yet." 8 50
@@ -2487,10 +2563,13 @@ case "$1" in
                 else
                     printf "${BOLD}  %-28s %s${RESET}\n" "ALIAS" "COMMAND"
                     printf "  %s\n" "$(printf '─%.0s' {1..60})"
-                    awk 'NF >= 3 && $1 !~ /^#/ && $2 == "=" {
-                        a=$1; $1=""; $2=""; gsub(/^ +/, "")
-                        printf "  %-28s %s\n", a, $0
-                    }' "$FAVS_FILE"
+                    while IFS= read -r _fl_line; do
+                        [[ -z "$_fl_line" || "$_fl_line" == '#'* || "$_fl_line" != *" = "* ]] && continue
+                        _fav_parse_line "$_fl_line"
+                        _fl_desc="$FAV_CMD"
+                        [[ -n "$FAV_VAR" ]] && _fl_desc="$_fl_desc  [+${FAV_VAR} ${FAV_POS}]"
+                        printf "  %-28s %s\n" "$FAV_ALIAS" "$_fl_desc"
+                    done < "$FAVS_FILE"
                 fi
                 ;;
             --edit|-e)
@@ -2517,10 +2596,13 @@ case "$1" in
                 printf "  s --fav <alias> = <command>     # save a favorite\n"
                 printf "  s --fav --list                  # list all favorites\n"
                 printf "  s --fav --remove <alias>        # remove a favorite\n"
-                printf "  s --fav --edit                  # open in \$EDITOR\n"
+                printf "  s --fav --edit                  # edit favorites (table editor)\n"
                 printf "\nExample:\n"
                 printf "  s --fav docker_restart_mule = docker restart mule\n"
-                printf "  s --run fm85 docker_restart_mule\n"
+                printf "  s --run docker_restart_mule fm85\n"
+                printf "\nParameterized favorite (add the variable via s --fav --edit):\n"
+                printf "  findfile = find . -name #var filename after\n"
+                printf "  s --run findfile report.txt fm85\n"
                 ;;
             *)
                 # s --fav docker_restart_mule = docker restart mule
