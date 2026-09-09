@@ -1010,6 +1010,105 @@ _wt_edit_paths() {
     fi
 }
 
+# ── whiptail menu/form editor for favorites.txt ────────────────────────────────
+# Format: <alias> = <command>. COMMAND is everything after the first " = ",
+# taken via bash parameter expansion (not awk $0-after-clearing-a-field,
+# which silently mangles internal spaces — see machines.txt's history).
+
+_wt_favs_get_command() {
+    local alias="$1" line
+    line=$(awk -v a="$alias" '$1==a && $2=="="{print;exit}' "$FAVS_FILE")
+    printf '%s' "${line#* = }"
+}
+
+_wt_edit_fav() {
+    local alias="$1" cur new
+    cur=$(_wt_favs_get_command "$alias")
+    new=$(whiptail --title "Edit: $alias" --inputbox "Command:" 10 78 "$cur" 3>&1 1>&2 2>&3) || return 1
+    if [[ -z "$new" ]]; then
+        whiptail --msgbox "Command can't be empty." 8 50
+        return 1
+    fi
+    _inplace_edit_file "$FAVS_FILE" awk -v a="$alias" -v c="$new" \
+        '$1==a && $2=="="{print a" = "c;next}{print}' "$FAVS_FILE"
+}
+
+_wt_add_fav() {
+    local alias cmd
+    alias=$(whiptail --title "Add favorite" --inputbox "Alias name:" 10 60 "" 3>&1 1>&2 2>&3) || return 1
+    [[ -z "$alias" ]] && return 1
+    if awk -v a="$alias" '$1==a && $2=="="{f=1}END{exit !f}' "$FAVS_FILE" 2>/dev/null; then
+        whiptail --msgbox "'$alias' already exists." 8 50
+        return 1
+    fi
+    cmd=$(whiptail --title "Add: $alias" --inputbox "Command:" 10 78 "" 3>&1 1>&2 2>&3) || return 1
+    if [[ -z "$cmd" ]]; then
+        whiptail --msgbox "Command can't be empty." 8 50
+        return 1
+    fi
+    printf '%s = %s\n' "$alias" "$cmd" >> "$FAVS_FILE"
+}
+
+_wt_delete_fav() {
+    local alias="$1"
+    whiptail --title "Confirm delete" --yesno "Delete favorite '$alias'?" 8 50 --defaultno || return 1
+    _inplace_edit_file "$FAVS_FILE" awk -v a="$alias" '!($1==a && $2=="=")' "$FAVS_FILE"
+}
+
+_wt_pick_fav() {
+    local prompt="$1"
+    local -a items=()
+    local line alias rest
+    while IFS= read -r line; do
+        [[ -z "$line" || "$line" == '#'* ]] && continue
+        alias="${line%% *}"
+        [[ "$line" == "$alias = "* ]] || continue
+        rest="${line#* = }"
+        items+=("$alias" "$rest")
+    done < "$FAVS_FILE"
+    if [[ ${#items[@]} -eq 0 ]]; then
+        whiptail --msgbox "No favorites saved yet." 8 50
+        return 1
+    fi
+    local n=$(( ${#items[@]} / 2 ))
+    whiptail --title "Favorites ($n)" --menu "$prompt (Esc to cancel)" 30 96 22 \
+        "${items[@]}" 3>&1 1>&2 2>&3
+}
+
+_wt_edit_favs() {
+    mkdir -p "$CONFIG_DIR"
+    touch "$FAVS_FILE"
+    local dirty=0
+    while true; do
+        local action
+        action=$(whiptail --title "Favorites" --menu "Choose an action (Esc to exit)" 14 60 3 \
+            edit "Edit a favorite" \
+            add "Add a favorite" \
+            delete "Delete a favorite" \
+            3>&1 1>&2 2>&3) || break
+        case "$action" in
+            edit)
+                local alias; alias=$(_wt_pick_fav "Select a favorite to edit") || continue
+                _wt_edit_fav "$alias" && dirty=1
+                ;;
+            add)
+                _wt_add_fav && dirty=1
+                ;;
+            delete)
+                local alias; alias=$(_wt_pick_fav "Select a favorite to delete") || continue
+                _wt_delete_fav "$alias" && dirty=1
+                ;;
+        esac
+    done
+    clear 2>/dev/null
+    if (( dirty )); then
+        printf "${GREEN}Favorites updated.${RESET}\n"
+        _sync_push_favs
+    else
+        printf "No changes.\n"
+    fi
+}
+
 # ── User tracking & access control helpers ────────────────────────────────────
 
 _current_user() { printf '%s' "$SHORTY_USER"; }
@@ -2394,7 +2493,12 @@ case "$1" in
                 fi
                 ;;
             --edit|-e)
-                "${EDITOR:-nano}" "$FAVS_FILE"
+                if command -v whiptail &>/dev/null && [[ -t 0 && -t 1 ]]; then
+                    _wt_edit_favs
+                else
+                    "${EDITOR:-nano}" "$FAVS_FILE"
+                    _sync_push_favs
+                fi
                 ;;
             --remove)
                 [[ -z "${3-}" ]] && { printf "Usage: s --fav --remove <alias>\n"; exit 1; }
