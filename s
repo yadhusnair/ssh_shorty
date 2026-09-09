@@ -757,23 +757,54 @@ _dedup_mapfile() {
         "$file" > "$TF" && mv "$TF" "$file" || rm -f "$TF"
 }
 
-# Table-style editing of machines.txt via visidata (vd), if installed and
-# stdin/stdout are a real terminal. Exports to a normalized TSV, lets the
-# user browse/edit it as a spreadsheet, then rebuilds machines.txt from the
-# result. Comment/blank lines are preserved verbatim (vd never sees them).
-# An EXTRA column catches any token that isn't a recognized field (nick,
-# target, port=/key=/forward=/mac=, #tag) so nothing is silently dropped —
-# e.g. a stray second target some entries carry that nothing else reads.
-_edit_table() {
+# Generic table-style file editor via visidata (vd). Exports $1 to a TSV
+# using awk program $3, lets the user browse/edit it as a spreadsheet, then
+# rebuilds $1 using reimport awk program $4. $2 is a short label used in
+# messages. Comment/blank lines in $1 are preserved verbatim (vd never sees
+# them). Returns: 0 = file updated, 1 = failed/aborted, 2 = no changes made.
+_vd_table_edit() {
+    local srcfile="$1" label="$2" export_awk="$3" reimport_awk="$4"
     local tsv comments newmap before after
     tsv=$(mktemp "$CONFIG_DIR/.vdedit.XXXXXX.tsv")
     comments=$(mktemp "$CONFIG_DIR/.vdedit.XXXXXX.comments")
     trap 'rm -f "$tsv" "$comments" "${newmap:-}"' RETURN
     trap 'rm -f "$tsv" "$comments" "${newmap:-}"; exit 130' INT TERM
 
-    awk 'NF==0 || $1 ~ /^#/' "$MAPFILE" > "$comments"
+    awk 'NF==0 || $1 ~ /^#/' "$srcfile" > "$comments"
+    awk "$export_awk" "$srcfile" > "$tsv"
 
-    awk 'BEGIN{OFS="\t"; print "NICK","TARGET","PORT","KEY","FORWARD","MAC","TAGS","EXTRA"}
+    before=$(cksum < "$tsv")
+
+    printf "${DIM}Opening %s as a table. Ignore the menu bar — you only need:${RESET}\n" "$label"
+    printf "${DIM}  arrows/hjkl move   e edit cell   d delete row   a add row   Ctrl+S save   q quit${RESET}\n"
+    vd -f tsv --quitguard --overwrite y "$tsv"
+
+    after=$(cksum < "$tsv")
+    if [[ "$before" == "$after" ]]; then
+        printf "No changes.\n"
+        return 2
+    fi
+
+    newmap=$(mktemp "$CONFIG_DIR/.vdedit.XXXXXX.new")
+    awk -F'\t' "$reimport_awk" "$tsv" > "$newmap"
+
+    if [[ ! -s "$newmap" ]]; then
+        printf "${RED}Table edit produced nothing valid — aborting, %s left unchanged.${RESET}\n" "$srcfile"
+        return 1
+    fi
+
+    cat "$comments" >> "$newmap"
+    mv "$newmap" "$srcfile"
+    printf "${GREEN}%s updated.${RESET}\n" "$label"
+}
+
+# Table-style editing of machines.txt (see _vd_table_edit). An EXTRA column
+# catches any token that isn't a recognized field (nick, target, port=/
+# key=/forward=/mac=, #tag) so nothing is silently dropped — e.g. a stray
+# second target some entries carry that nothing else reads.
+_edit_table() {
+    local export_awk reimport_awk status
+    export_awk='BEGIN{OFS="\t"; print "NICK","TARGET","PORT","KEY","FORWARD","MAC","TAGS","EXTRA"}
         NF>=2 && $1 !~ /^#/ {
             nick=$1; target=$2; port=""; key=""; fwd=""; mac=""; tags=""; extra=""
             for (i=3;i<=NF;i++){
@@ -786,23 +817,8 @@ _edit_table() {
                 else                   { extra=(extra==""?f:extra" "f) }
             }
             print nick, target, port, key, fwd, mac, tags, extra
-        }' "$MAPFILE" > "$tsv"
-
-    before=$(cksum < "$tsv")
-
-    printf "${DIM}Opening fleet as a table. Ignore the menu bar — you only need:${RESET}\n"
-    printf "${DIM}  arrows/hjkl move   e edit cell   d delete row   Ctrl+S save   q quit${RESET}\n"
-    printf "${DIM}(sync to the team happens automatically after you save)${RESET}\n"
-    vd -f tsv --quitguard --overwrite y "$tsv"
-
-    after=$(cksum < "$tsv")
-    if [[ "$before" == "$after" ]]; then
-        printf "No changes.\n"
-        return 0
-    fi
-
-    newmap=$(mktemp "$CONFIG_DIR/.vdedit.XXXXXX.new")
-    awk -F'\t' 'NR==1{next}
+        }'
+    reimport_awk='NR==1{next}
         {
             nick=$1; target=$2; port=$3; key=$4; fwd=$5; mac=$6; tags=$7; extra=$8
             gsub(/^[ \t]+|[ \t]+$/,"",nick); gsub(/^[ \t]+|[ \t]+$/,"",target)
@@ -819,18 +835,34 @@ _edit_table() {
                 n=split(tags,ta,","); for(i=1;i<=n;i++) if(ta[i]!="") line=line" #"ta[i]
             }
             print line
-        }' "$tsv" > "$newmap"
-
-    if [[ ! -s "$newmap" ]]; then
-        printf "${RED}Table edit produced no valid devices — aborting, machines.txt left unchanged.${RESET}\n"
-        return 1
+        }'
+    _vd_table_edit "$MAPFILE" "the fleet" "$export_awk" "$reimport_awk"
+    status=$?
+    if [[ $status -eq 0 ]]; then
+        _dedup_mapfile "$MAPFILE"
+        _sync_push
     fi
+    return $status
+}
 
-    cat "$comments" >> "$newmap"
-    mv "$newmap" "$MAPFILE"
-    _dedup_mapfile "$MAPFILE"
-    printf "${GREEN}Fleet updated.${RESET}\n"
-    _sync_push
+# Table-style editing of machine-paths.txt (see _vd_table_edit).
+# Format: <tag> <alias> <path>  (path assumed to have no internal spaces,
+# matching every existing entry and how the file documents itself).
+_edit_paths_table() {
+    local export_awk reimport_awk status
+    export_awk='BEGIN{OFS="\t"; print "TAG","ALIAS","PATH"}
+        NF>=3 && $1 !~ /^#/ { print $1, $2, $3 }'
+    reimport_awk='NR==1{next}
+        {
+            tag=$1; alias=$2; path=$3
+            gsub(/^[ \t]+|[ \t]+$/,"",tag); gsub(/^[ \t]+|[ \t]+$/,"",alias); gsub(/^[ \t]+|[ \t]+$/,"",path)
+            if (tag=="" || alias=="" || path=="") next
+            print tag" "alias" "path
+        }'
+    _vd_table_edit "$PATHS_FILE" "path aliases" "$export_awk" "$reimport_awk"
+    status=$?
+    [[ $status -eq 0 ]] && _sync_push_paths
+    return $status
 }
 
 # ── User tracking & access control helpers ────────────────────────────────────
@@ -2190,8 +2222,12 @@ case "$1" in
     --paths)
         mkdir -p "$CONFIG_DIR"
         [[ ! -f "$PATHS_FILE" ]] && touch "$PATHS_FILE"
-        ${EDITOR:-nano} "$PATHS_FILE"
-        _sync_push_paths
+        if command -v vd &>/dev/null && [[ -t 0 && -t 1 ]]; then
+            _edit_paths_table
+        else
+            ${EDITOR:-nano} "$PATHS_FILE"
+            _sync_push_paths
+        fi
         ;;
 
     --fav)
