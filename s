@@ -2209,9 +2209,9 @@ case "$1" in
             TARGET=$(_apply_mac_resolution "$NICK" "$TARGET")
             
             if _anim_enabled; then
-                _neon_trace "Connecting to ${NICK}  →  ${TARGET}"
+                _neon_trace "Connecting (${TARGET})"
             else
-                printf "${DIM}Connecting to %s → %s${RESET}\n" "$NICK" "$TARGET"
+                printf "${DIM}Connecting (%s)${RESET}\n" "$TARGET"
             fi
             _log_connection "$NICK" "$TARGET"
             # BatchMode pre-check: detects missing key access before SSH can fall
