@@ -790,7 +790,9 @@ _edit_table() {
 
     before=$(cksum < "$tsv")
 
-    printf "${DIM}Opening fleet as a table — Ctrl+S to save, q to quit (asks to confirm if unsaved).${RESET}\n"
+    printf "${DIM}Opening fleet as a table. Ignore the menu bar — you only need:${RESET}\n"
+    printf "${DIM}  arrows/hjkl move   e edit cell   d delete row   Ctrl+S save   q quit${RESET}\n"
+    printf "${DIM}(sync to the team happens automatically after you save)${RESET}\n"
     vd -f tsv --quitguard --overwrite y "$tsv"
 
     after=$(cksum < "$tsv")

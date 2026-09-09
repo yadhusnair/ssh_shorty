@@ -13,11 +13,24 @@ BASH_COMPLETIONS_DIR="$HOME/.local/share/bash-completion/completions"
 UPDATE_MODE=false
 [[ "${1:-}" == "--update" ]] && UPDATE_MODE=true
 
+# Black & white visidata theme — never overwrites a personal .visidatarc.
+install_vd_theme() {
+    if [[ -f "$HOME/.visidatarc" ]]; then
+        echo "  Skipped:   ~/.visidatarc (already exists — not overwriting)"
+    else
+        cp "$SCRIPT_DIR/visidatarc" "$HOME/.visidatarc"
+        echo "  Installed: ~/.visidatarc (black & white theme, no menu-bar colors)"
+    fi
+}
+
 # Optional: visidata (vd) lets 's --edit' open the fleet as an editable
 # spreadsheet-style table instead of a plain text editor. Skips silently if
 # already installed; never fails the rest of the install/update if it can't.
 offer_visidata() {
-    command -v vd &>/dev/null && return 0
+    if command -v vd &>/dev/null; then
+        install_vd_theme
+        return 0
+    fi
 
     echo "  visidata (vd) lets 's --edit' open your fleet as an editable"
     echo "  spreadsheet-style table instead of a plain text editor."
@@ -49,7 +62,9 @@ offer_visidata() {
     else
         echo "  Could not find pip3/pip/brew — install visidata manually later:"
         echo "    pip install --user visidata"
+        return 0
     fi
+    install_vd_theme
 }
 
 if [[ "$UPDATE_MODE" == true ]]; then
