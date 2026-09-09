@@ -1173,6 +1173,8 @@ case "$1" in
             [[ ${#watch_nicks[@]} -eq 0 ]] && { printf "No devices found.\n"; exit 0; }
 
             watch_tmp=$(mktemp -d)
+            _watch_spin=""
+            _anim_enabled && _watch_spin=$(_ora_spin_start "Pinging ${#watch_nicks[@]} device(s)...")
             for i in "${!watch_nicks[@]}"; do
                 safe="${watch_nicks[$i]//\//_}"
                 _load_device_opts "${watch_nicks[$i]}"
@@ -1188,6 +1190,7 @@ case "$1" in
                   fi ) &
             done
             wait
+            [[ -n "$_watch_spin" ]] && _ora_spin_stop "$_watch_spin"
 
             clear
             printf '\n'
