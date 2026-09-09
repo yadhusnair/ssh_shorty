@@ -284,8 +284,22 @@ _ora_spin_stop() {
     _clear_line
 }
 
-_ora_succeed() { _clear_line; printf "${GREEN}✔${RESET} %s\n" "$1"; }
+_ora_succeed() { _clear_line; printf "${GREEN}${2:-✔}${RESET} %s\n" "$1"; }
 _ora_fail()    { _clear_line; printf "${RED}✖${RESET} %s\n" "$1"; }
+
+# Discards any input typed while a spinner was running (e.g. arrow keys
+# mashed during "Connecting...") so it doesn't leak into the real interactive
+# session as raw escape bytes once the pty takes over. Canonical-mode tty
+# buffers hold keystrokes without a trailing newline, so `read` alone won't
+# see them — briefly switch to non-canonical mode to drain everything queued.
+_flush_stdin() {
+    [[ -t 0 ]] || return
+    local _old_stty _junk
+    _old_stty=$(stty -g 2>/dev/null) || return
+    stty -icanon min 0 time 1 2>/dev/null
+    while read -r -n 4096 -t 0.05 _junk; do :; done
+    stty "$_old_stty" 2>/dev/null
+}
 
 # Snap-style block progress bar for rsync transfers — each file gets its own
 # bar + eta (like `snap install`) that stays on screen once done, with a blank
@@ -1964,6 +1978,7 @@ case "$1" in
                     printf "${GREEN}● %s is online${RESET} → %s\n" "$NICK" "$TARGET"
                 fi
                 _log_connection "$NICK" "$TARGET"
+                _flush_stdin
                 exec ssh "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" "$TARGET"
             fi
             # Timeout check (0 = no timeout)
@@ -2295,8 +2310,9 @@ case "$1" in
                 fi
             fi
             rm -f "$_pc_err"
-            _anim_enabled && _ora_succeed "Connected"
+            _anim_enabled && _ora_succeed "Connected" "●"
             _log_remote_connection "$NICK" "$TARGET"
+            _flush_stdin
             exec ssh "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" "$TARGET" "$@"
         fi
         ;;
