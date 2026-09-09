@@ -1484,8 +1484,6 @@ case "$1" in
         TARGET=$(_apply_mac_resolution "$NICK" "$TARGET")
         ssh_cmd="ssh"
         for o in "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}"; do ssh_cmd+=" $o"; done
-        _dl_dest="${LOCAL_DEST}"; [[ "$LOCAL_DEST" == "." ]] && _dl_dest="$(pwd)"
-        _anim_enabled && _neon_trace "Downloading  ${NICK}:${REMOTE_PATH}  →  ${_dl_dest}"
         _snap_transfer -e "$ssh_cmd" "$TARGET:$REMOTE_PATH" "$LOCAL_DEST"
         ;;
 
@@ -1570,7 +1568,6 @@ case "$1" in
         TARGET=$(_apply_mac_resolution "$NICK" "$TARGET")
         ssh_cmd="ssh"
         for o in "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}"; do ssh_cmd+=" $o"; done
-        _anim_enabled && _neon_trace "Uploading  ${LOCAL_PATH}  →  ${NICK}:${REMOTE_PATH}"
         _snap_transfer -e "$ssh_cmd" "$LOCAL_PATH" "$TARGET:$REMOTE_PATH"
         ;;
 
@@ -2189,8 +2186,6 @@ case "$1" in
             TARGET=$(_apply_mac_resolution "$NICK" "$TARGET")
             ssh_cmd="ssh"
             for o in "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}"; do ssh_cmd+=" $o"; done
-            _anim_enabled && _glitch_line \
-                "Pulling  ${NICK}:${REMOTE_PATH}  →  ${LOCAL_DEST}" "${BOLD}${GREEN}"
             _snap_transfer -e "$ssh_cmd" "$TARGET:$REMOTE_PATH" "$LOCAL_DEST"
 
         # rsync push: /local nick:/path
@@ -2202,8 +2197,6 @@ case "$1" in
             TARGET=$(_apply_mac_resolution "$NICK" "$TARGET")
             ssh_cmd="ssh"
             for o in "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}"; do ssh_cmd+=" $o"; done
-            _anim_enabled && _glitch_line \
-                "Pushing  ${LOCAL_PATH}  →  ${NICK}:${REMOTE_PATH}" "${BOLD}${GREEN}"
             _snap_transfer -e "$ssh_cmd" "$LOCAL_PATH" "$TARGET:$REMOTE_PATH"
 
         # SSH: nick [extra ssh args]
