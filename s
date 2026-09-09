@@ -871,38 +871,44 @@ _wt_delete_device() {
     _inplace_edit awk -v n="$nick" '$1!=n' "$MAPFILE"
 }
 
-_wt_device_menu() {
-    local nick="$1" action
-    action=$(whiptail --title "$nick" --menu "Choose an action" 12 60 2 \
-        edit "Edit fields" \
-        delete "Delete device" \
-        3>&1 1>&2 2>&3) || return 1
-    case "$action" in
-        edit)   _wt_edit_device "$nick" ;;
-        delete) _wt_delete_device "$nick" ;;
-        *)      return 1 ;;
-    esac
+_wt_pick_device() {
+    local prompt="$1"
+    local -a items=()
+    while IFS=' ' read -r nick target; do
+        items+=("$nick" "$target")
+    done < <(awk 'NF>=2 && $1!~/^#/{print $1, $2}' "$MAPFILE")
+    if [[ ${#items[@]} -eq 0 ]]; then
+        whiptail --msgbox "No devices in the fleet yet." 8 50
+        return 1
+    fi
+    local n=$(( ${#items[@]} / 2 ))
+    whiptail --title "Fleet ($n devices)" --menu "$prompt (Esc to cancel)" 30 96 22 \
+        "${items[@]}" 3>&1 1>&2 2>&3
 }
 
 _wt_edit_machines() {
     _require_mapfile
     local dirty=0
     while true; do
-        local -a items=()
-        while IFS=' ' read -r nick target; do
-            items+=("$nick" "$target")
-        done < <(awk 'NF>=2 && $1!~/^#/{print $1, $2}' "$MAPFILE")
-        local n=$(( ${#items[@]} / 2 ))
-        items+=("+ add" "Add a new device")
-        local choice
-        choice=$(whiptail --title "Fleet ($n devices)" \
-            --menu "Select a device (Esc to exit)" 24 76 16 \
-            "${items[@]}" 3>&1 1>&2 2>&3) || break
-        if [[ "$choice" == "+ add" ]]; then
-            _wt_add_device && dirty=1
-        else
-            _wt_device_menu "$choice" && dirty=1
-        fi
+        local action
+        action=$(whiptail --title "Fleet" --menu "Choose an action (Esc to exit)" 14 60 3 \
+            edit "Edit a device" \
+            add "Add a device" \
+            delete "Delete a device" \
+            3>&1 1>&2 2>&3) || break
+        case "$action" in
+            edit)
+                local nick; nick=$(_wt_pick_device "Select a device to edit") || continue
+                _wt_edit_device "$nick" && dirty=1
+                ;;
+            add)
+                _wt_add_device && dirty=1
+                ;;
+            delete)
+                local nick; nick=$(_wt_pick_device "Select a device to delete") || continue
+                _wt_delete_device "$nick" && dirty=1
+                ;;
+        esac
     done
     clear 2>/dev/null
     if (( dirty )); then
@@ -951,17 +957,19 @@ _wt_delete_path() {
     _inplace_edit_file "$PATHS_FILE" awk -v t="$tag" -v a="$alias" '!($1==t && $2==a)' "$PATHS_FILE"
 }
 
-_wt_path_menu() {
-    local tag="$1" alias="$2" action
-    action=$(whiptail --title "$tag / $alias" --menu "Choose an action" 12 60 2 \
-        edit "Edit path" \
-        delete "Delete alias" \
-        3>&1 1>&2 2>&3) || return 1
-    case "$action" in
-        edit)   _wt_edit_path "$tag" "$alias" ;;
-        delete) _wt_delete_path "$tag" "$alias" ;;
-        *)      return 1 ;;
-    esac
+_wt_pick_path() {
+    local prompt="$1"
+    local -a items=()
+    while IFS=' ' read -r tag alias path; do
+        items+=("$tag/$alias" "$path")
+    done < <(awk 'NF>=3 && $1!~/^#/{print $1, $2, $3}' "$PATHS_FILE")
+    if [[ ${#items[@]} -eq 0 ]]; then
+        whiptail --msgbox "No path aliases yet." 8 50
+        return 1
+    fi
+    local n=$(( ${#items[@]} / 2 ))
+    whiptail --title "Path aliases ($n)" --menu "$prompt (Esc to cancel)" 30 96 22 \
+        "${items[@]}" 3>&1 1>&2 2>&3
 }
 
 _wt_edit_paths() {
@@ -969,21 +977,25 @@ _wt_edit_paths() {
     [[ -f "$PATHS_FILE" ]] || touch "$PATHS_FILE"
     local dirty=0
     while true; do
-        local -a items=()
-        while IFS=' ' read -r tag alias path; do
-            items+=("$tag/$alias" "$path")
-        done < <(awk 'NF>=3 && $1!~/^#/{print $1, $2, $3}' "$PATHS_FILE")
-        local n=$(( ${#items[@]} / 2 ))
-        items+=("+ add" "Add a new path alias")
-        local choice
-        choice=$(whiptail --title "Path aliases ($n)" \
-            --menu "Select an alias (Esc to exit)" 24 76 16 \
-            "${items[@]}" 3>&1 1>&2 2>&3) || break
-        if [[ "$choice" == "+ add" ]]; then
-            _wt_add_path && dirty=1
-        else
-            _wt_path_menu "${choice%%/*}" "${choice#*/}" && dirty=1
-        fi
+        local action
+        action=$(whiptail --title "Path aliases" --menu "Choose an action (Esc to exit)" 14 60 3 \
+            edit "Edit a path alias" \
+            add "Add a path alias" \
+            delete "Delete a path alias" \
+            3>&1 1>&2 2>&3) || break
+        case "$action" in
+            edit)
+                local choice; choice=$(_wt_pick_path "Select an alias to edit") || continue
+                _wt_edit_path "${choice%%/*}" "${choice#*/}" && dirty=1
+                ;;
+            add)
+                _wt_add_path && dirty=1
+                ;;
+            delete)
+                local choice; choice=$(_wt_pick_path "Select an alias to delete") || continue
+                _wt_delete_path "${choice%%/*}" "${choice#*/}" && dirty=1
+                ;;
+        esac
     done
     clear 2>/dev/null
     if (( dirty )); then
