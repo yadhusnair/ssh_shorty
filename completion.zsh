@@ -180,8 +180,23 @@ _ssh_shorty() {
             # No alias match — offer "" so user can type a one-off command
             compadd -Q -U -P '"' -S '"' -- ""
           fi
-        elif (( CURRENT == 4 )); then
-          _nick_or_group
+        else
+          # A parameterized favorite (has a #var marker) needs its value typed
+          # in position 4 before the device — no completion there. Only offer
+          # the device/group once that slot is filled (position 5). A plain
+          # favorite/raw command has no value slot, so device is position 4.
+          local favs_file="$HOME/.config/ssh_shorty/favorites.txt"
+          local run_alias="${words[3]}"
+          local has_var=0
+          if [[ -f "$favs_file" ]] && awk -v a="$run_alias" \
+              '$1==a && $2=="=" && $0 ~ / #var / {f=1} END{exit !f}' "$favs_file" 2>/dev/null; then
+            has_var=1
+          fi
+          if (( has_var )); then
+            (( CURRENT == 5 )) && _nick_or_group
+          else
+            (( CURRENT == 4 )) && _nick_or_group
+          fi
         fi
         ;;
       --keydeploy|--close|-m)

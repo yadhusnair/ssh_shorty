@@ -170,8 +170,24 @@ _ssh_shorty_complete() {
                     else
                         COMPREPLY=( '""' )
                     fi
-                elif [[ "$cword" -eq 3 ]]; then
-                    _complete_nick_or_group "$cur"
+                else
+                    # A parameterized favorite (has a #var marker) needs its
+                    # value typed in position 3 before the device — no
+                    # completion there. Only offer the device/group once that
+                    # slot is filled (position 4). A plain favorite/raw
+                    # command has no value slot, so device is position 3.
+                    local favs_file="$HOME/.config/ssh_shorty/favorites.txt"
+                    local run_alias="${COMP_WORDS[2]}"
+                    local has_var=0
+                    if [[ -f "$favs_file" ]] && awk -v a="$run_alias" \
+                        '$1==a && $2=="=" && $0 ~ / #var / {f=1} END{exit !f}' "$favs_file" 2>/dev/null; then
+                        has_var=1
+                    fi
+                    if [[ "$has_var" -eq 1 ]]; then
+                        [[ "$cword" -eq 4 ]] && _complete_nick_or_group "$cur"
+                    else
+                        [[ "$cword" -eq 3 ]] && _complete_nick_or_group "$cur"
+                    fi
                 fi
                 ;;
             --keydeploy|--close|-m)
