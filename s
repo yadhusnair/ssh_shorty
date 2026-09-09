@@ -262,11 +262,18 @@ _block_spin_start() {
 # `tr` is forced line-buffered, otherwise it batches rsync's \r-updates and the
 # bar only appears to jump once at the very end instead of live.
 _snap_transfer() {
-    local w=28 pct rate eta tail filled k line status file="" file_num=0 total_files="" counter=""
+    local w=28 pct rate eta tail filled k line status file="" fname file_num=0 total_files="" counter=""
+    local cols prefix avail
     if ! _anim_enabled; then
         rsync -avP "$@"
         return $?
     fi
+    cols=$(tput cols 2>/dev/null); [[ -z "$cols" ]] && cols=80
+    # shrink the bar on narrow terminals so bar + labels + a minimal filename
+    # always fit one row — otherwise the whole line-wrap problem above can
+    # still happen even with filename truncation.
+    (( w > (cols - 40) * 2 / 3 )) && w=$(( (cols - 40) * 2 / 3 ))
+    (( w < 8 )) && w=8
     _hide_cursor
     printf '\n'
     rsync -av --partial --progress "$@" 2>&1 | stdbuf -oL tr '\r' '\n' | while IFS= read -r line; do
@@ -280,11 +287,22 @@ _snap_transfer() {
                 counter=" (${file_num})"
             fi
             filled=$(( pct * w / 100 ))
+            # basename only, truncated (keeping the tail — extension matters more
+            # than the leading path) to whatever width is left after the bar —
+            # a long nested path otherwise wraps the terminal line and _clear_line
+            # can only erase the row the cursor is on, leaving stale text behind.
+            fname="${file##*/}"
+            prefix=$(printf " %3d%%%s  %-11s eta %-8s " "$pct" "$counter" "$rate" "$eta")
+            avail=$(( cols - w - 2 - ${#prefix} - 2 ))
+            (( avail < 6 )) && avail=6
+            if (( ${#fname} > avail )); then
+                fname="…${fname: -$((avail-1))}"
+            fi
             _clear_line
             printf "${GREEN}["
             for (( k=0; k<filled; k++ )); do printf "█"; done
             for (( k=filled; k<w; k++ )); do printf "${DIM}░${RESET}${GREEN}"; done
-            printf "]${RESET} ${BOLD}%3d%%${RESET}${counter}  ${DIM}%-11s eta %-8s${RESET} %s" "$pct" "$rate" "$eta" "$file"
+            printf "]${RESET} ${BOLD}%3d%%${RESET}${counter}  ${DIM}%-11s eta %-8s${RESET} %s" "$pct" "$rate" "$eta" "$fname"
             (( pct == 100 )) && printf '\n\n'
         elif [[ -n "$line" && "$line" != *"incremental file list" && "$line" != sent\ * \
                 && "$line" != "total size is"* && "$line" != */ ]]; then
