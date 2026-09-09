@@ -3,6 +3,37 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# `curl ... install.sh | bash` has no real file on disk for this script, so
+# ${BASH_SOURCE[0]} resolves to nothing and SCRIPT_DIR above silently becomes
+# the caller's cwd — which doesn't have the sibling files (s, completion.zsh,
+# ...) this script expects, since curl only piped install.sh's own content,
+# never the rest of the repo. Detect that (no "s" next to us) and self-fetch
+# a real checkout, matching how `s --update` already does it.
+if [[ ! -f "$SCRIPT_DIR/s" ]]; then
+    echo "Fetching ssh_shorty..."
+    _install_tmp=$(mktemp -d)
+    trap 'rm -rf "$_install_tmp"' EXIT
+    _tarball="$_install_tmp/repo.tar.gz"
+    if ! curl -fsSL --max-time 60 \
+            "https://github.com/yadhusnair/ssh_shorty/archive/refs/heads/main.tar.gz" \
+            -o "$_tarball"; then
+        echo "Download failed." >&2
+        exit 1
+    fi
+    if ! tar -xzf "$_tarball" -C "$_install_tmp"; then
+        echo "Extract failed." >&2
+        exit 1
+    fi
+    _repo_dir=$(find "$_install_tmp" -maxdepth 1 -type d -name 'ssh_shorty-*' | head -1)
+    if [[ -z "$_repo_dir" || ! -f "$_repo_dir/s" ]]; then
+        echo "Unexpected archive layout — aborted." >&2
+        exit 1
+    fi
+    bash "$_repo_dir/install.sh" "$@"
+    exit $?
+fi
+
 BIN_DIR="$HOME/.local/bin"
 CONFIG_DIR="$HOME/.config/ssh_shorty"
 ZSH_COMPLETIONS_DIR="$HOME/.zsh/completions"
