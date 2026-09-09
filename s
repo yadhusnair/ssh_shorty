@@ -757,112 +757,214 @@ _dedup_mapfile() {
         "$file" > "$TF" && mv "$TF" "$file" || rm -f "$TF"
 }
 
-# Generic table-style file editor via visidata (vd). Exports $1 to a TSV
-# using awk program $3, lets the user browse/edit it as a spreadsheet, then
-# rebuilds $1 using reimport awk program $4. $2 is a short label used in
-# messages. Comment/blank lines in $1 are preserved verbatim (vd never sees
-# them). Returns: 0 = file updated, 1 = failed/aborted, 2 = no changes made.
-_vd_table_edit() {
-    local srcfile="$1" label="$2" export_awk="$3" reimport_awk="$4"
-    local tsv comments newmap before after
-    tsv=$(mktemp "$CONFIG_DIR/.vdedit.XXXXXX.tsv")
-    comments=$(mktemp "$CONFIG_DIR/.vdedit.XXXXXX.comments")
-    trap 'rm -f "$tsv" "$comments" "${newmap:-}"' RETURN
-    trap 'rm -f "$tsv" "$comments" "${newmap:-}"; exit 130' INT TERM
+# Generic: run a command's stdout into a new file, replacing $1 atomically.
+_inplace_edit_file() {
+    local target="$1"; shift
+    local TF; TF=$(mktemp "$CONFIG_DIR/.edit.XXXXXX")
+    if "$@" > "$TF"; then mv "$TF" "$target"; else rm -f "$TF"; return 1; fi
+}
 
-    awk 'NF==0 || $1 ~ /^#/' "$srcfile" > "$comments"
-    awk "$export_awk" "$srcfile" > "$tsv"
+# ── whiptail menu/form editor for machines.txt ─────────────────────────────────
+# nmtui-style: a plain list you arrow through, Enter to act on one, simple
+# one-field-at-a-time forms (Tab/arrows, OK/Cancel — no keybindings to learn).
+# port=/key= are editable; mac=/forward=/any unrecognized token is preserved
+# untouched (round-tripped via WT_PRESERVE) since the form doesn't expose them.
 
-    before=$(cksum < "$tsv")
+_wt_load_device() {
+    local nick="$1"
+    # `|` on purpose, not a tab — bash's `read` treats tab as "IFS whitespace"
+    # regardless of what IFS is set to, silently collapsing consecutive empty
+    # fields (e.g. an empty PORT before a non-empty TAGS) into the wrong slots.
+    IFS='|' read -r WT_TARGET WT_PORT WT_KEY WT_TAGS WT_PRESERVE < <(
+        awk -v n="$nick" '
+            $1==n {
+                target=$2; port=""; key=""; tags=""; preserve=""
+                for (i=3;i<=NF;i++) {
+                    f=$i
+                    if (f ~ /^port=/)      { sub(/^port=/,"",f); port=f }
+                    else if (f ~ /^key=/)  { sub(/^key=/,"",f); key=f }
+                    else if (f ~ /^#/)     { sub(/^#/,"",f); tags=(tags==""?f:tags" "f) }
+                    else                   { preserve=(preserve==""?f:preserve" "f) }
+                }
+                printf "%s|%s|%s|%s|%s\n", target, port, key, tags, preserve
+                exit
+            }' "$MAPFILE")
+}
 
-    printf "${DIM}Opening %s as a table. Ignore the menu bar — you only need:${RESET}\n" "$label"
-    printf "${DIM}  arrows/hjkl move   e edit cell   d delete row   a add row   Ctrl+S save   q quit${RESET}\n"
-    vd -f tsv --quitguard --overwrite y "$tsv"
-
-    after=$(cksum < "$tsv")
-    if [[ "$before" == "$after" ]]; then
-        printf "No changes.\n"
-        return 2
+_wt_save_device() {
+    local nick="$1" target="$2" port="$3" key="$4" tags="$5" preserve="$6" is_new="${7:-false}"
+    local line="$nick $target" t
+    [[ -n "$port" ]] && line="$line port=$port"
+    [[ -n "$key" ]]  && line="$line key=$key"
+    [[ -n "$preserve" ]] && line="$line $preserve"
+    for t in $tags; do line="$line #$t"; done
+    if [[ "$is_new" == true ]]; then
+        printf '%s\n' "$line" >> "$MAPFILE"
+    else
+        _inplace_edit awk -v n="$nick" -v newline="$line" '$1==n{print newline;next}{print}' "$MAPFILE"
     fi
+}
 
-    newmap=$(mktemp "$CONFIG_DIR/.vdedit.XXXXXX.new")
-    awk -F'\t' "$reimport_awk" "$tsv" > "$newmap"
-
-    if [[ ! -s "$newmap" ]]; then
-        printf "${RED}Table edit produced nothing valid — aborting, %s left unchanged.${RESET}\n" "$srcfile"
+_wt_edit_device() {
+    local nick="$1" target port key tags
+    _wt_load_device "$nick"
+    target=$(whiptail --title "Edit: $nick" --inputbox "Target (user@host):" 10 60 "$WT_TARGET" 3>&1 1>&2 2>&3) || return 1
+    port=$(whiptail --title "Edit: $nick" --inputbox "Port (blank = default 22):" 10 60 "$WT_PORT" 3>&1 1>&2 2>&3) || return 1
+    key=$(whiptail --title "Edit: $nick" --inputbox "SSH key path (blank = default):" 10 60 "$WT_KEY" 3>&1 1>&2 2>&3) || return 1
+    tags=$(whiptail --title "Edit: $nick" --inputbox "Tags, space-separated, no # (e.g. fm sherpa):" 10 60 "$WT_TAGS" 3>&1 1>&2 2>&3) || return 1
+    if [[ -z "$target" ]]; then
+        whiptail --msgbox "Target can't be empty — no changes made." 8 50
         return 1
     fi
-
-    cat "$comments" >> "$newmap"
-    mv "$newmap" "$srcfile"
-    printf "${GREEN}%s updated.${RESET}\n" "$label"
+    _wt_save_device "$nick" "$target" "$port" "$key" "$tags" "$WT_PRESERVE"
 }
 
-# Table-style editing of machines.txt (see _vd_table_edit). An EXTRA column
-# catches any token that isn't a recognized field (nick, target, port=/
-# key=/forward=/mac=, #tag) so nothing is silently dropped — e.g. a stray
-# second target some entries carry that nothing else reads.
-_edit_table() {
-    local export_awk reimport_awk status
-    export_awk='BEGIN{OFS="\t"; print "NICK","TARGET","PORT","KEY","FORWARD","MAC","TAGS","EXTRA"}
-        NF>=2 && $1 !~ /^#/ {
-            nick=$1; target=$2; port=""; key=""; fwd=""; mac=""; tags=""; extra=""
-            for (i=3;i<=NF;i++){
-                f=$i
-                if (f ~ /^port=/)      { sub(/^port=/,"",f); port=f }
-                else if (f ~ /^key=/)  { sub(/^key=/,"",f); key=f }
-                else if (f ~ /^mac=/)  { sub(/^mac=/,"",f); mac=f }
-                else if (f ~ /^forward=/) { sub(/^forward=/,"",f); fwd=(fwd==""?f:fwd","f) }
-                else if (f ~ /^#/)     { sub(/^#/,"",f); tags=(tags==""?f:tags","f) }
-                else                   { extra=(extra==""?f:extra" "f) }
-            }
-            print nick, target, port, key, fwd, mac, tags, extra
-        }'
-    reimport_awk='NR==1{next}
-        {
-            nick=$1; target=$2; port=$3; key=$4; fwd=$5; mac=$6; tags=$7; extra=$8
-            gsub(/^[ \t]+|[ \t]+$/,"",nick); gsub(/^[ \t]+|[ \t]+$/,"",target)
-            if (nick=="" || target=="") next
-            line=nick" "target
-            if (port!="") line=line" port="port
-            if (key!="")  line=line" key="key
-            if (mac!="")  line=line" mac="mac
-            if (fwd!="") {
-                n=split(fwd,fa,","); for(i=1;i<=n;i++) if(fa[i]!="") line=line" forward="fa[i]
-            }
-            if (extra!="") line=line" "extra
-            if (tags!="") {
-                n=split(tags,ta,","); for(i=1;i<=n;i++) if(ta[i]!="") line=line" #"ta[i]
-            }
-            print line
-        }'
-    _vd_table_edit "$MAPFILE" "the fleet" "$export_awk" "$reimport_awk"
-    status=$?
-    if [[ $status -eq 0 ]]; then
+_wt_add_device() {
+    local nick target port key tags
+    nick=$(whiptail --title "Add device" --inputbox "Nickname:" 10 60 "" 3>&1 1>&2 2>&3) || return 1
+    [[ -z "$nick" ]] && return 1
+    if _nick_exists "$nick"; then
+        whiptail --msgbox "Nickname '$nick' already exists." 8 50
+        return 1
+    fi
+    target=$(whiptail --title "Add: $nick" --inputbox "Target (user@host):" 10 60 "" 3>&1 1>&2 2>&3) || return 1
+    if [[ -z "$target" ]]; then
+        whiptail --msgbox "Target can't be empty." 8 50
+        return 1
+    fi
+    port=$(whiptail --title "Add: $nick" --inputbox "Port (blank = default 22):" 10 60 "" 3>&1 1>&2 2>&3) || return 1
+    key=$(whiptail --title "Add: $nick" --inputbox "SSH key path (blank = default):" 10 60 "" 3>&1 1>&2 2>&3) || return 1
+    tags=$(whiptail --title "Add: $nick" --inputbox "Tags, space-separated, no # (e.g. fm sherpa):" 10 60 "" 3>&1 1>&2 2>&3) || return 1
+    _wt_save_device "$nick" "$target" "$port" "$key" "$tags" "" true
+}
+
+_wt_delete_device() {
+    local nick="$1"
+    whiptail --title "Confirm delete" --yesno "Delete '$nick' from the fleet?" 8 50 --defaultno || return 1
+    _inplace_edit awk -v n="$nick" '$1!=n' "$MAPFILE"
+}
+
+_wt_device_menu() {
+    local nick="$1" action
+    action=$(whiptail --title "$nick" --menu "Choose an action" 12 60 2 \
+        edit "Edit fields" \
+        delete "Delete device" \
+        3>&1 1>&2 2>&3) || return 1
+    case "$action" in
+        edit)   _wt_edit_device "$nick" ;;
+        delete) _wt_delete_device "$nick" ;;
+        *)      return 1 ;;
+    esac
+}
+
+_wt_edit_machines() {
+    _require_mapfile
+    local dirty=0
+    while true; do
+        local -a items=()
+        while IFS=' ' read -r nick target; do
+            items+=("$nick" "$target")
+        done < <(awk 'NF>=2 && $1!~/^#/{print $1, $2}' "$MAPFILE")
+        local n=$(( ${#items[@]} / 2 ))
+        items+=("+ add" "Add a new device")
+        local choice
+        choice=$(whiptail --title "Fleet ($n devices)" \
+            --menu "Select a device (Esc to exit)" 24 76 16 \
+            "${items[@]}" 3>&1 1>&2 2>&3) || break
+        if [[ "$choice" == "+ add" ]]; then
+            _wt_add_device && dirty=1
+        else
+            _wt_device_menu "$choice" && dirty=1
+        fi
+    done
+    clear 2>/dev/null
+    if (( dirty )); then
         _dedup_mapfile "$MAPFILE"
         _sync_push
+    else
+        printf "No changes.\n"
     fi
-    return $status
 }
 
-# Table-style editing of machine-paths.txt (see _vd_table_edit).
-# Format: <tag> <alias> <path>  (path assumed to have no internal spaces,
-# matching every existing entry and how the file documents itself).
-_edit_paths_table() {
-    local export_awk reimport_awk status
-    export_awk='BEGIN{OFS="\t"; print "TAG","ALIAS","PATH"}
-        NF>=3 && $1 !~ /^#/ { print $1, $2, $3 }'
-    reimport_awk='NR==1{next}
-        {
-            tag=$1; alias=$2; path=$3
-            gsub(/^[ \t]+|[ \t]+$/,"",tag); gsub(/^[ \t]+|[ \t]+$/,"",alias); gsub(/^[ \t]+|[ \t]+$/,"",path)
-            if (tag=="" || alias=="" || path=="") next
-            print tag" "alias" "path
-        }'
-    _vd_table_edit "$PATHS_FILE" "path aliases" "$export_awk" "$reimport_awk"
-    status=$?
-    [[ $status -eq 0 ]] && _sync_push_paths
-    return $status
+# ── whiptail menu/form editor for machine-paths.txt ────────────────────────────
+
+_wt_edit_path() {
+    local tag="$1" alias="$2" cur new
+    cur=$(awk -v t="$tag" -v a="$alias" '$1==t && $2==a{print $3; exit}' "$PATHS_FILE")
+    new=$(whiptail --title "$tag / $alias" --inputbox "Remote path:" 10 70 "$cur" 3>&1 1>&2 2>&3) || return 1
+    if [[ -z "$new" ]]; then
+        whiptail --msgbox "Path can't be empty." 8 50
+        return 1
+    fi
+    _inplace_edit_file "$PATHS_FILE" awk -v t="$tag" -v a="$alias" -v p="$new" \
+        '$1==t && $2==a{print t" "a" "p;next}{print}' "$PATHS_FILE"
+}
+
+_wt_add_path() {
+    local tag alias path
+    tag=$(whiptail --title "Add path alias" --inputbox "Tag (matches a #tag in machines.txt):" 10 60 "" 3>&1 1>&2 2>&3) || return 1
+    [[ -z "$tag" ]] && return 1
+    alias=$(whiptail --title "Add: $tag" --inputbox "Alias name:" 10 60 "" 3>&1 1>&2 2>&3) || return 1
+    [[ -z "$alias" ]] && return 1
+    if awk -v t="$tag" -v a="$alias" '$1==t && $2==a{f=1}END{exit !f}' "$PATHS_FILE" 2>/dev/null; then
+        whiptail --msgbox "'$tag / $alias' already exists." 8 50
+        return 1
+    fi
+    path=$(whiptail --title "Add: $tag / $alias" --inputbox "Remote path:" 10 70 "" 3>&1 1>&2 2>&3) || return 1
+    if [[ -z "$path" ]]; then
+        whiptail --msgbox "Path can't be empty." 8 50
+        return 1
+    fi
+    printf '%s %s %s\n' "$tag" "$alias" "$path" >> "$PATHS_FILE"
+}
+
+_wt_delete_path() {
+    local tag="$1" alias="$2"
+    whiptail --title "Confirm delete" --yesno "Delete '$tag / $alias'?" 8 50 --defaultno || return 1
+    _inplace_edit_file "$PATHS_FILE" awk -v t="$tag" -v a="$alias" '!($1==t && $2==a)' "$PATHS_FILE"
+}
+
+_wt_path_menu() {
+    local tag="$1" alias="$2" action
+    action=$(whiptail --title "$tag / $alias" --menu "Choose an action" 12 60 2 \
+        edit "Edit path" \
+        delete "Delete alias" \
+        3>&1 1>&2 2>&3) || return 1
+    case "$action" in
+        edit)   _wt_edit_path "$tag" "$alias" ;;
+        delete) _wt_delete_path "$tag" "$alias" ;;
+        *)      return 1 ;;
+    esac
+}
+
+_wt_edit_paths() {
+    mkdir -p "$CONFIG_DIR"
+    [[ -f "$PATHS_FILE" ]] || touch "$PATHS_FILE"
+    local dirty=0
+    while true; do
+        local -a items=()
+        while IFS=' ' read -r tag alias path; do
+            items+=("$tag/$alias" "$path")
+        done < <(awk 'NF>=3 && $1!~/^#/{print $1, $2, $3}' "$PATHS_FILE")
+        local n=$(( ${#items[@]} / 2 ))
+        items+=("+ add" "Add a new path alias")
+        local choice
+        choice=$(whiptail --title "Path aliases ($n)" \
+            --menu "Select an alias (Esc to exit)" 24 76 16 \
+            "${items[@]}" 3>&1 1>&2 2>&3) || break
+        if [[ "$choice" == "+ add" ]]; then
+            _wt_add_path && dirty=1
+        else
+            _wt_path_menu "${choice%%/*}" "${choice#*/}" && dirty=1
+        fi
+    done
+    clear 2>/dev/null
+    if (( dirty )); then
+        printf "path aliases updated.\n"
+        _sync_push_paths
+    else
+        printf "No changes.\n"
+    fi
 }
 
 # ── User tracking & access control helpers ────────────────────────────────────
@@ -2212,8 +2314,8 @@ case "$1" in
 
     --edit|-e)
         _require_mapfile
-        if command -v vd &>/dev/null && [[ -t 0 && -t 1 ]]; then
-            _edit_table
+        if command -v whiptail &>/dev/null && [[ -t 0 && -t 1 ]]; then
+            _wt_edit_machines
         else
             ${EDITOR:-nano} "$MAPFILE"
         fi
@@ -2222,8 +2324,8 @@ case "$1" in
     --paths)
         mkdir -p "$CONFIG_DIR"
         [[ ! -f "$PATHS_FILE" ]] && touch "$PATHS_FILE"
-        if command -v vd &>/dev/null && [[ -t 0 && -t 1 ]]; then
-            _edit_paths_table
+        if command -v whiptail &>/dev/null && [[ -t 0 && -t 1 ]]; then
+            _wt_edit_paths
         else
             ${EDITOR:-nano} "$PATHS_FILE"
             _sync_push_paths
