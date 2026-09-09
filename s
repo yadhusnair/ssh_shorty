@@ -376,6 +376,9 @@ _snap_transfer() {
             for (( k=filled; k<w; k++ )); do printf "${DIM}░${RESET}${GREEN}"; done
             printf "]${RESET} ${BOLD}%3d%%${RESET}${counter}  ${DIM}%-11s eta %-8s${RESET} %s" "$pct" "$rate" "$eta" "$fname"
             (( pct == 100 )) && printf '\n\n'
+        elif [[ "$line" == rsync:* || "$line" == "rsync error:"* ]]; then
+            _clear_line
+            printf "${RED}%s${RESET}\n" "$line"
         elif [[ -n "$line" && "$line" != *"incremental file list" && "$line" != sent\ * \
                 && "$line" != "total size is"* && "$line" != */ ]]; then
             file="$line"
@@ -387,7 +390,7 @@ _snap_transfer() {
     if (( status == 0 )); then
         printf "${GREEN}done${RESET}\n"
     else
-        printf "${RED}transfer failed${RESET}\n"
+        printf "${RED}transfer failed${RESET} ${DIM}(see rsync error above)${RESET}\n"
     fi
     _show_cursor
     return "$status"
@@ -913,6 +916,7 @@ _wt_edit_machines() {
     clear 2>/dev/null
     if (( dirty )); then
         _dedup_mapfile "$MAPFILE"
+        printf "${GREEN}Fleet updated.${RESET}\n"
         _sync_push
     else
         printf "No changes.\n"
