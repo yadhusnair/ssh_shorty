@@ -43,6 +43,33 @@ else
     RED='' GREEN='' YELLOW='' CYAN='' BOLD='' DIM='' RESET=''
 fi
 
+# Black & white whiptail theme (default newt theme is blue/purple on white)
+export NEWT_COLORS='
+root=white,black
+border=white,black
+window=white,black
+shadow=black,black
+title=white,black
+button=black,white
+actbutton=white,black
+checkbox=white,black
+actcheckbox=black,white
+entry=white,black
+label=white,black
+listbox=white,black
+actlistbox=black,white
+textbox=white,black
+acttextbox=black,white
+helpline=white,black
+roottext=white,black
+emptyscale=white,black
+fullscale=white,black
+disentry=white,black
+compactbutton=black,white
+actsellistbox=black,white
+sellistbox=white,black
+'
+
 # ── ControlMaster ──────────────────────────────────────────────────────────────
 # Reuse existing TCP connections — second connect to the same host is ~instant
 mkdir -p "$SSH_CTRL_DIR" 2>/dev/null
