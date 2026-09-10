@@ -33,6 +33,84 @@ jobs:
           echo "s --list:"
           s --list
 
+      - name: Stand up a local sshd target (brew's openssh, not the system one — avoids Remote Login/TCC)
+        run: |
+          brew install openssh tmux
+          mkdir -p /tmp/sshd_test
+          ssh-keygen -t ed25519 -N "" -f /tmp/sshd_test/host_key -q
+          mkdir -p "$HOME/.ssh"
+          ssh-keygen -t ed25519 -N "" -f "$HOME/.ssh/id_ed25519_test" -q
+          cp "$HOME/.ssh/id_ed25519_test.pub" /tmp/sshd_test/authorized_keys
+          chmod 700 "$HOME/.ssh"
+          chmod 600 /tmp/sshd_test/authorized_keys /tmp/sshd_test/host_key
+
+          cat > /tmp/sshd_test/sshd_config << EOF
+          Port 2222
+          ListenAddress 127.0.0.1
+          ListenAddress 127.0.0.2
+          HostKey /tmp/sshd_test/host_key
+          AuthorizedKeysFile /tmp/sshd_test/authorized_keys
+          PasswordAuthentication no
+          PubkeyAuthentication yes
+          UsePAM no
+          StrictModes no
+          PidFile /tmp/sshd_test/sshd.pid
+          LogLevel ERROR
+          EOF
+
+          "$(brew --prefix openssh)/sbin/sshd" -f /tmp/sshd_test/sshd_config -E /tmp/sshd_test/sshd.log
+          sleep 1
+          nc -z 127.0.0.1 2222 && echo "sshd is up on 127.0.0.1:2222" || { echo "sshd failed to start"; cat /tmp/sshd_test/sshd.log; exit 1; }
+
+      - name: Register the local sshd as two devices (real s --add, not hand-edited machines.txt)
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          s --add citest1 "$(whoami)@127.0.0.1" port=2222 "key=$HOME/.ssh/id_ed25519_test"
+          s --add citest2 "$(whoami)@127.0.0.2" port=2222 "key=$HOME/.ssh/id_ed25519_test"
+          s --list
+
+      - name: Real SSH connect test (s <nick> <remote command>)
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          out=$(s citest1 echo mac-ssh-connect-ok)
+          echo "output: $out"
+          [[ "$out" == *"mac-ssh-connect-ok"* ]] || { echo "SSH connect via s did not return expected output"; exit 1; }
+
+      - name: Real tmux multi-device test (s <nick1> <nick2> opens a tmux window each)
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          # macOS has no GNU `timeout`; background it and kill after a grace period
+          # instead (the tmux session is created detached before s ever tries to
+          # attach, so this is just a safety net, not the thing under test).
+          s citest1 citest2 </dev/null >/tmp/tmux_multi.out 2>&1 &
+          spid=$!
+          sleep 5
+          kill "$spid" 2>/dev/null || true
+          wait "$spid" 2>/dev/null || true
+          echo "--- s output ---"; cat /tmp/tmux_multi.out
+          sleep 3
+
+          session=$(tmux list-sessions -F '#{session_name}' | grep '^sshorty_' | head -1)
+          echo "tmux session: $session"
+          [[ -n "$session" ]] || { echo "no tmux session created"; exit 1; }
+
+          echo "--- windows ---"
+          tmux list-windows -t "$session"
+          win_count=$(tmux list-windows -t "$session" | wc -l | tr -d ' ')
+          [[ "$win_count" -eq 2 ]] || { echo "expected 2 tmux windows, got $win_count"; exit 1; }
+
+          for nick in citest1 citest2; do
+            echo "--- pane content: $nick ---"
+            tmux capture-pane -p -t "${session}:${nick}"
+          done
+
+          tmux kill-session -t "$session"
+
+      - name: Clean up local sshd
+        if: always()
+        run: |
+          [[ -f /tmp/sshd_test/sshd.pid ]] && kill "$(cat /tmp/sshd_test/sshd.pid)" 2>/dev/null || true
+
       - name: Build local tarball + a real local tap (brew rejects bare formula files)
         run: |
           VER="$(cat VERSION)"
