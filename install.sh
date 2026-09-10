@@ -46,17 +46,7 @@ BASH_COMPLETIONS_DIR="$HOME/.local/share/bash-completion/completions"
 offer_fzf() {
     command -v fzf &>/dev/null && return 0
 
-    echo "  fzf gives 's --edit'/'s' a live-filtering search box (type to"
-    echo "  narrow the list, arrows + Enter to pick) instead of a plain list."
-    _fzf_resp="n"
-    if [[ -t 0 ]]; then
-        printf "  Install fzf now? [Y/n] "
-        read -r _fzf_resp
-    fi
-    if [[ "$_fzf_resp" =~ ^[Nn] ]]; then
-        echo "  Skipping fzf — falls back to a plain search box + list."
-        return 0
-    fi
+    echo "  Installing fzf (powers the live-filtering search box in 's --edit' etc.)..."
 
     if command -v brew &>/dev/null; then
         echo "  Installing fzf via brew..."
