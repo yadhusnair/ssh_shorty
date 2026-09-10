@@ -9,8 +9,11 @@ class S < Formula
   license "MIT"
   version "20260637"
 
+  depends_on "bash"
+
   def install
     bin.install "s"
+    inreplace bin/"s", "#!/usr/bin/env bash", "#!#{Formula["bash"].opt_bin}/bash"
     bash_completion.install "completion.bash" => "s"
     zsh_completion.install "completion.zsh" => "_s"
   end

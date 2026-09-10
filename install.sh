@@ -39,6 +39,42 @@ CONFIG_DIR="$HOME/.config/ssh_shorty"
 ZSH_COMPLETIONS_DIR="$HOME/.zsh/completions"
 BASH_COMPLETIONS_DIR="$HOME/.local/share/bash-completion/completions"
 
+# macOS ships /bin/bash 3.2 (frozen at the GPLv2/GPLv3 license switch) which lacks
+# mapfile, ${var,,}, and local -n — all used by s. s's shebang is `#!/usr/bin/env bash`,
+# so it runs whichever bash resolves first in PATH; on a stock Mac that's still the
+# ancient one, so pin the installed copy's shebang to an actual bash 4+ if one exists
+# (or can be installed via brew), rather than hoping PATH order works out at run time.
+ensure_bash4() {
+    local target="$1"
+    [[ "$(uname -s)" == "Darwin" ]] || return 0
+
+    local found=""
+    if [[ "${BASH_VERSINFO[0]}" -ge 4 ]]; then
+        found="$(command -v bash)"
+    else
+        for cand in /opt/homebrew/bin/bash /usr/local/bin/bash; do
+            [[ -x "$cand" ]] && { found="$cand"; break; }
+        done
+    fi
+
+    if [[ -z "$found" ]] && command -v brew &>/dev/null; then
+        echo "  Installing bash 4+ via brew (macOS ships bash 3.2, s needs 4+)..."
+        if brew install bash &>/dev/null; then
+            local _prefix; _prefix="$(brew --prefix bash 2>/dev/null)"
+            [[ -x "$_prefix/bin/bash" ]] && found="$_prefix/bin/bash"
+        fi
+    fi
+
+    if [[ -n "$found" ]]; then
+        { printf '#!%s\n' "$found"; tail -n +2 "$target"; } > "$target.tmp" \
+            && mv "$target.tmp" "$target" && chmod +x "$target"
+        echo "  Using bash: $found"
+    else
+        echo "  Warning: s needs bash 4+ but only bash 3.2 (macOS default) was found."
+        echo "           Install a modern bash:  brew install bash"
+    fi
+}
+
 # Optional: fzf powers the live-filtering search box in the table editors
 # (s --edit etc.) and the top-level device picker. Everything already
 # degrades gracefully without it (a plain search box + list instead), so
@@ -114,6 +150,7 @@ if [[ "$UPDATE_MODE" == true ]]; then
     # Update the s script
     cp "$SCRIPT_DIR/s" "$BIN_DIR/s"
     chmod +x "$BIN_DIR/s"
+    ensure_bash4 "$BIN_DIR/s"
     echo "  ✓ s"
 
     # Update completion files (only where already installed)
@@ -209,6 +246,7 @@ mkdir -p "$CONFIG_DIR"
 # Install the 's' script
 cp "$SCRIPT_DIR/s" "$BIN_DIR/s"
 chmod +x "$BIN_DIR/s"
+ensure_bash4 "$BIN_DIR/s"
 echo "  Installed: $BIN_DIR/s"
 
 # ── Fleet config + machines.txt ───────────────────────────────────────────────

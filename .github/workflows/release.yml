@@ -81,8 +81,14 @@ jobs:
             license "MIT"
             version "VERVAL"
 
+            # s uses mapfile / ${var,,} / local -n, all bash 4+ only — macOS's
+            # stock /bin/bash is 3.2, so pin the shebang to this dependency's bash
+            # rather than relying on PATH order at run time.
+            depends_on "bash"
+
             def install
               bin.install "s"
+              inreplace bin/"s", "#!/usr/bin/env bash", "#!#{Formula["bash"].opt_bin}/bash"
               bash_completion.install "completion.bash" => "s"
               zsh_completion.install "completion.zsh" => "_s"
             end
