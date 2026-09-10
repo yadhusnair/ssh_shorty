@@ -824,20 +824,36 @@ _inplace_edit_file() {
     if "$@" > "$TF"; then mv "$TF" "$target"; else rm -f "$TF"; return 1; fi
 }
 
-# Generic search-then-pick over a whiptail menu's tag/description pairs.
-# $1 is a nameref to an "items" array (tag1 desc1 tag2 desc2 ...), $2 a
-# title, $3 the picker prompt. Asks for an optional search term first
-# (case-insensitive substring match against tag or description); a single
-# match jumps straight to it (no second screen — the search box IS the
-# picker), several matches narrow the menu to just those, no match says so.
-# An empty search shows the full list, same as before. Echoes the chosen
-# tag on success; returns 1 on cancel/no matches.
+# Search-then-pick over a "items" array (tag1 desc1 tag2 desc2 ...), given
+# as a nameref in $1; $2 a title, $3 the picker prompt. Echoes the chosen
+# tag on success; returns 1 on cancel/nothing to pick.
+#
+# Prefers fzf when installed: a live-filtering list with the search field
+# right there on screen (search-as-you-type, arrows to move, Enter to
+# pick) — whiptail has no widget that combines a search field with a list
+# on one screen, only fixed dialog templates, so this is the real version
+# of that. Falls back to a search box (whiptail --inputbox) followed by a
+# whiptail --menu — a plain, unfiltered list if you leave it blank — when
+# fzf isn't available.
 _wt_search_and_pick() {
     local -n _sp_items="$1"
     local title="$2" prompt="$3"
     if [[ ${#_sp_items[@]} -eq 0 ]]; then
         whiptail --msgbox "Nothing to pick from yet." 8 50
         return 1
+    fi
+
+    if command -v fzf &>/dev/null; then
+        local i choice
+        local -a lines=()
+        for (( i=0; i<${#_sp_items[@]}; i+=2 )); do
+            lines+=("$(printf '%-28s %s' "${_sp_items[$i]}" "${_sp_items[$((i+1))]}")")
+        done
+        choice=$(printf '%s\n' "${lines[@]}" \
+            | fzf --height=90% --border --reverse --prompt="Search> " --header="$title — $prompt")
+        [[ -z "$choice" ]] && return 1
+        printf '%s' "${choice%% *}"
+        return 0
     fi
 
     local search

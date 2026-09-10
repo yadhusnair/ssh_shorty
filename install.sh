@@ -39,6 +39,71 @@ CONFIG_DIR="$HOME/.config/ssh_shorty"
 ZSH_COMPLETIONS_DIR="$HOME/.zsh/completions"
 BASH_COMPLETIONS_DIR="$HOME/.local/share/bash-completion/completions"
 
+# Optional: fzf powers the live-filtering search box in the table editors
+# (s --edit etc.) and the top-level device picker. Everything already
+# degrades gracefully without it (a plain search box + list instead), so
+# this is a nice-to-have, never fatal to the rest of install/update.
+offer_fzf() {
+    command -v fzf &>/dev/null && return 0
+
+    echo "  fzf gives 's --edit'/'s' a live-filtering search box (type to"
+    echo "  narrow the list, arrows + Enter to pick) instead of a plain list."
+    _fzf_resp="n"
+    if [[ -t 0 ]]; then
+        printf "  Install fzf now? [Y/n] "
+        read -r _fzf_resp
+    fi
+    if [[ "$_fzf_resp" =~ ^[Nn] ]]; then
+        echo "  Skipping fzf — falls back to a plain search box + list."
+        return 0
+    fi
+
+    if command -v brew &>/dev/null; then
+        echo "  Installing fzf via brew..."
+        brew install fzf && { echo "  Installed: fzf"; return 0; }
+        echo "  brew install failed — falls back to a plain search box + list."
+        return 0
+    fi
+
+    if command -v apt-get &>/dev/null; then
+        echo "  Installing fzf via apt..."
+        if sudo apt-get install -y fzf 2>/dev/null; then
+            echo "  Installed: fzf"
+            return 0
+        fi
+        echo "  apt install failed/unavailable — trying a user-local binary instead..."
+    fi
+
+    # User-local binary — no root needed, works regardless of package manager.
+    local _fzf_arch
+    case "$(uname -m)" in
+        x86_64)         _fzf_arch="amd64" ;;
+        aarch64|arm64)  _fzf_arch="arm64" ;;
+        *)
+            echo "  Unrecognized CPU arch — install fzf manually: https://github.com/junegunn/fzf#installation"
+            return 0 ;;
+    esac
+    local _fzf_ver
+    _fzf_ver=$(curl -fsSL --max-time 10 https://api.github.com/repos/junegunn/fzf/releases/latest 2>/dev/null \
+        | grep -m1 '"tag_name"' | sed -E 's/.*"v([^"]+)".*/\1/')
+    if [[ -z "$_fzf_ver" ]]; then
+        echo "  Could not check the latest fzf version — install manually: https://github.com/junegunn/fzf#installation"
+        return 0
+    fi
+    local _fzf_tmp; _fzf_tmp=$(mktemp -d)
+    if curl -fsSL --max-time 30 \
+            "https://github.com/junegunn/fzf/releases/download/v${_fzf_ver}/fzf-${_fzf_ver}-linux_${_fzf_arch}.tar.gz" \
+            -o "$_fzf_tmp/fzf.tar.gz" \
+            && mkdir -p "$BIN_DIR" \
+            && tar -xzf "$_fzf_tmp/fzf.tar.gz" -C "$BIN_DIR" fzf; then
+        chmod +x "$BIN_DIR/fzf"
+        echo "  Installed: fzf"
+    else
+        echo "  fzf install failed — falls back to a plain search box + list."
+    fi
+    rm -rf "$_fzf_tmp"
+}
+
 # --update mode: called by 's --update' after downloading a fresh repo tarball.
 # Only updates the script + completions — never touches user data files.
 UPDATE_MODE=false
@@ -70,6 +135,8 @@ if [[ "$UPDATE_MODE" == true ]]; then
         echo "  ✓ completion.bash (cfg)"
     fi
 
+    echo ""
+    offer_fzf
     echo ""
     echo "Done. Open a new shell tab to activate new completions."
     exit 0
@@ -350,6 +417,9 @@ for RC in "$HOME/.bashrc" "$HOME/.zshrc"; do
         echo "  Updated:   $RC (PATH)"
     fi
 done
+
+echo ""
+offer_fzf
 
 echo ""
 echo "Done."
