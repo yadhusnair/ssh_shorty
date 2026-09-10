@@ -29,7 +29,7 @@ brew tap yadhusnair/ssh_shorty
 brew install s
 ```
 
-### Linux (one-liner)
+### macOS / Linux (curl one-liner)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/yadhusnair/ssh_shorty/main/install.sh | bash

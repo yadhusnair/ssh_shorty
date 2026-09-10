@@ -65,6 +65,14 @@ offer_fzf() {
     fi
 
     # User-local binary — no root needed, works regardless of package manager.
+    local _fzf_os
+    case "$(uname -s)" in
+        Linux)  _fzf_os="linux" ;;
+        Darwin) _fzf_os="darwin" ;;
+        *)
+            echo "  Unrecognized OS — install fzf manually: https://github.com/junegunn/fzf#installation"
+            return 0 ;;
+    esac
     local _fzf_arch
     case "$(uname -m)" in
         x86_64)         _fzf_arch="amd64" ;;
@@ -82,7 +90,7 @@ offer_fzf() {
     fi
     local _fzf_tmp; _fzf_tmp=$(mktemp -d)
     if curl -fsSL --max-time 30 \
-            "https://github.com/junegunn/fzf/releases/download/v${_fzf_ver}/fzf-${_fzf_ver}-linux_${_fzf_arch}.tar.gz" \
+            "https://github.com/junegunn/fzf/releases/download/v${_fzf_ver}/fzf-${_fzf_ver}-${_fzf_os}_${_fzf_arch}.tar.gz" \
             -o "$_fzf_tmp/fzf.tar.gz" \
             && mkdir -p "$BIN_DIR" \
             && tar -xzf "$_fzf_tmp/fzf.tar.gz" -C "$BIN_DIR" fzf; then
