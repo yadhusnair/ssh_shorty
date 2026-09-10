@@ -408,6 +408,7 @@ usage() {
     printf "${BOLD}Usage:${RESET}\n"
     printf "  s                                           pick device interactively (fzf)\n"
     printf "  s <nick> [ssh args]                         connect (prefix match if needed)\n"
+    printf "  s <nick> -m                                 connect via its recorded MAC (test ARP recovery)\n"
     printf "  s <nick1> <nick2> ...                       open each in a tmux window\n"
     printf "  s -m <nick1> <nick2> ...                    tmux synchronized panes\n"
     printf "  s -                                         reconnect to last device\n"
@@ -425,6 +426,7 @@ usage() {
     printf "  s --close <nick|@group|--all>               close ControlMaster socket\n"
     printf "  s --add <nickname> <user@ip> [#tags]        add a device\n"
     printf "  s --set <nickname> <user@ip>                update a device's IP\n"
+    printf "  s --set-mac <nickname> <mac>                set/update a device's MAC address\n"
     printf "  s -d <alias> <nick> [local_dest]            download via path alias\n"
     printf "  s --view <nick> <path>                      stream remote file to local viewer\n"
     printf "  s -u <local-path> <nick>[:<alias|path>]    upload file/dir (alias resolved)\n"
@@ -939,35 +941,37 @@ _wt_search_and_pick() {
 # ── whiptail menu/form editor for machines.txt ─────────────────────────────────
 # nmtui-style: a plain list you arrow through, Enter to act on one, simple
 # one-field-at-a-time forms (Tab/arrows, OK/Cancel — no keybindings to learn).
-# port=/key= are editable; mac=/forward=/any unrecognized token is preserved
-# untouched (round-tripped via WT_PRESERVE) since the form doesn't expose them.
+# port=/key=/mac= are editable; forward=/any unrecognized token is preserved
+# untouched (round-tripped via WT_PRESERVE) since the form doesn't expose it.
 
 _wt_load_device() {
     local nick="$1"
     # `|` on purpose, not a tab — bash's `read` treats tab as "IFS whitespace"
     # regardless of what IFS is set to, silently collapsing consecutive empty
     # fields (e.g. an empty PORT before a non-empty TAGS) into the wrong slots.
-    IFS='|' read -r WT_TARGET WT_PORT WT_KEY WT_TAGS WT_PRESERVE < <(
+    IFS='|' read -r WT_TARGET WT_PORT WT_KEY WT_MAC WT_TAGS WT_PRESERVE < <(
         awk -v n="$nick" '
             $1==n {
-                target=$2; port=""; key=""; tags=""; preserve=""
+                target=$2; port=""; key=""; mac=""; tags=""; preserve=""
                 for (i=3;i<=NF;i++) {
                     f=$i
                     if (f ~ /^port=/)      { sub(/^port=/,"",f); port=f }
                     else if (f ~ /^key=/)  { sub(/^key=/,"",f); key=f }
+                    else if (f ~ /^mac=/)  { sub(/^mac=/,"",f); mac=f }
                     else if (f ~ /^#/)     { sub(/^#/,"",f); tags=(tags==""?f:tags" "f) }
                     else                   { preserve=(preserve==""?f:preserve" "f) }
                 }
-                printf "%s|%s|%s|%s|%s\n", target, port, key, tags, preserve
+                printf "%s|%s|%s|%s|%s|%s\n", target, port, key, mac, tags, preserve
                 exit
             }' "$MAPFILE")
 }
 
 _wt_save_device() {
-    local nick="$1" target="$2" port="$3" key="$4" tags="$5" preserve="$6" is_new="${7:-false}"
+    local nick="$1" target="$2" port="$3" key="$4" mac="$5" tags="$6" preserve="$7" is_new="${8:-false}"
     local line="$nick $target" t
     [[ -n "$port" ]] && line="$line port=$port"
     [[ -n "$key" ]]  && line="$line key=$key"
+    [[ -n "$mac" ]]  && line="$line mac=$mac"
     [[ -n "$preserve" ]] && line="$line $preserve"
     for t in $tags; do line="$line #$t"; done
     if [[ "$is_new" == true ]]; then
@@ -978,21 +982,26 @@ _wt_save_device() {
 }
 
 _wt_edit_device() {
-    local nick="$1" target port key tags
+    local nick="$1" target port key mac tags
     _wt_load_device "$nick"
     target=$(whiptail --title "Edit: $nick" --inputbox "Target (user@host):" 10 60 "$WT_TARGET" 3>&1 1>&2 2>&3) || return 1
     port=$(whiptail --title "Edit: $nick" --inputbox "Port (blank = default 22):" 10 60 "$WT_PORT" 3>&1 1>&2 2>&3) || return 1
     key=$(whiptail --title "Edit: $nick" --inputbox "SSH key path (blank = default):" 10 60 "$WT_KEY" 3>&1 1>&2 2>&3) || return 1
+    mac=$(whiptail --title "Edit: $nick" --inputbox "MAC address (blank = none, e.g. aa:bb:cc:dd:ee:ff):" 10 70 "$WT_MAC" 3>&1 1>&2 2>&3) || return 1
     tags=$(whiptail --title "Edit: $nick" --inputbox "Tags, space-separated, no # (e.g. fm sherpa):" 10 60 "$WT_TAGS" 3>&1 1>&2 2>&3) || return 1
     if [[ -z "$target" ]]; then
         whiptail --msgbox "Target can't be empty — no changes made." 8 50
         return 1
     fi
-    _wt_save_device "$nick" "$target" "$port" "$key" "$tags" "$WT_PRESERVE"
+    if [[ -n "$mac" ]] && ! [[ "$mac" =~ ^([0-9A-Fa-f]{1,2}:){5}[0-9A-Fa-f]{1,2}$ ]]; then
+        whiptail --msgbox "That doesn't look like a valid MAC address (expected aa:bb:cc:dd:ee:ff) — no changes made." 9 70
+        return 1
+    fi
+    _wt_save_device "$nick" "$target" "$port" "$key" "$mac" "$tags" "$WT_PRESERVE"
 }
 
 _wt_add_device() {
-    local nick target port key tags
+    local nick target port key mac tags
     nick=$(whiptail --title "Add device" --inputbox "Nickname:" 10 60 "" 3>&1 1>&2 2>&3) || return 1
     [[ -z "$nick" ]] && return 1
     if _nick_exists "$nick"; then
@@ -1006,8 +1015,13 @@ _wt_add_device() {
     fi
     port=$(whiptail --title "Add: $nick" --inputbox "Port (blank = default 22):" 10 60 "" 3>&1 1>&2 2>&3) || return 1
     key=$(whiptail --title "Add: $nick" --inputbox "SSH key path (blank = default):" 10 60 "" 3>&1 1>&2 2>&3) || return 1
+    mac=$(whiptail --title "Add: $nick" --inputbox "MAC address (blank = none, e.g. aa:bb:cc:dd:ee:ff):" 10 70 "" 3>&1 1>&2 2>&3) || return 1
+    if [[ -n "$mac" ]] && ! [[ "$mac" =~ ^([0-9A-Fa-f]{1,2}:){5}[0-9A-Fa-f]{1,2}$ ]]; then
+        whiptail --msgbox "That doesn't look like a valid MAC address (expected aa:bb:cc:dd:ee:ff) — not saved." 9 70
+        mac=""
+    fi
     tags=$(whiptail --title "Add: $nick" --inputbox "Tags, space-separated, no # (e.g. fm sherpa):" 10 60 "" 3>&1 1>&2 2>&3) || return 1
-    _wt_save_device "$nick" "$target" "$port" "$key" "$tags" "" true
+    _wt_save_device "$nick" "$target" "$port" "$key" "$mac" "$tags" "" true
 }
 
 _wt_delete_device() {
@@ -1016,12 +1030,32 @@ _wt_delete_device() {
     _inplace_edit awk -v n="$nick" '$1!=n' "$MAPFILE"
 }
 
+# Shows every column (target, port, key, mac, tags) so it's obvious at a glance
+# which devices are still missing a mac= — not just nickname + user@ip.
 _wt_pick_device() {
     local prompt="$1"
     local -a items=()
-    while IFS=' ' read -r nick target; do
-        items+=("$nick" "$target")
-    done < <(awk 'NF>=2 && $1!~/^#/{print $1, $2}' "$MAPFILE")
+    local nick target port key mac tags desc
+    while IFS='|' read -r nick target port key mac tags; do
+        [[ -z "$nick" ]] && continue
+        desc="$target"
+        [[ -n "$port" ]] && desc="$desc  port=$port"
+        [[ -n "$key" ]]  && desc="$desc  key=$key"
+        desc="$desc  mac=${mac:-none}"
+        [[ -n "$tags" ]] && desc="$desc  #$tags"
+        items+=("$nick" "$desc")
+    done < <(awk '
+        NF>=2 && $1!~/^#/ {
+            nick=$1; target=$2; port=""; key=""; mac=""; tags=""
+            for (i=3;i<=NF;i++) {
+                f=$i
+                if (f ~ /^port=/)      { sub(/^port=/,"",f); port=f }
+                else if (f ~ /^key=/)  { sub(/^key=/,"",f); key=f }
+                else if (f ~ /^mac=/)  { sub(/^mac=/,"",f); mac=f }
+                else if (f ~ /^#/)     { sub(/^#/,"",f); tags=(tags==""?f:tags" "f) }
+            }
+            printf "%s|%s|%s|%s|%s|%s\n", nick, target, port, key, mac, tags
+        }' "$MAPFILE")
     _wt_search_and_pick items "Fleet" "$prompt"
 }
 
@@ -2235,6 +2269,29 @@ case "$1" in
         _sync_push
         ;;
 
+    --set-mac)
+        [[ -z "$2" || -z "$3" ]] && {
+            printf "Usage: s --set-mac <nickname> <mac-address>\n"; exit 1; }
+        _require_mapfile
+        NICK="$2"; MAC="$3"
+        _nick_exists "$NICK" || {
+            printf "Nickname '%s' not found. Use --add to add it.\n" "$NICK"; exit 1; }
+        [[ "$MAC" =~ ^([0-9A-Fa-f]{1,2}:){5}[0-9A-Fa-f]{1,2}$ ]] || {
+            printf "Invalid MAC address '%s' — expected format aa:bb:cc:dd:ee:ff.\n" "$MAC"; exit 1; }
+        _sm_line=$(awk -v n="$NICK" '$1==n{print;exit}' "$MAPFILE")
+        _sm_has_mac=0
+        for _sm_field in $_sm_line; do [[ "$_sm_field" == mac=* ]] && _sm_has_mac=1; done
+        if (( _sm_has_mac )); then
+            _inplace_edit awk -v n="$NICK" -v m="$MAC" \
+                '$1==n { for(i=1;i<=NF;i++) if ($i ~ /^mac=/) $i="mac="m } { print }' "$MAPFILE"
+        else
+            _inplace_edit awk -v n="$NICK" -v m="$MAC" \
+                '$1==n { print $0 " mac=" m; next } { print }' "$MAPFILE"
+        fi
+        printf "Set MAC for %s: %s\n" "$NICK" "$MAC"
+        _sync_push
+        ;;
+
     --rename)
         [[ -z "$2" || -z "$3" ]] && {
             printf "Usage: s --rename <old-nickname> <new-nickname>\n"; exit 1; }
@@ -2844,12 +2901,40 @@ case "$1" in
             NICK="$RESOLVED_NICK"; TARGET="$RESOLVED_TARGET"
             shift
 
+            # -m/--mac: force resolution via the recorded mac= through ARP,
+            # ignoring the stored IP entirely — for testing that MAC-based
+            # recovery actually works for this device, on demand.
+            FORCE_MAC=0
+            if [[ "$1" == "-m" || "$1" == "--mac" ]]; then
+                FORCE_MAC=1
+                shift
+            fi
+
             _load_device_opts "$NICK"
             # The stored host as it literally sits in machines.txt, before any
             # .local/ARP resolution — used below to detect when resolution moved
             # the target to a different address, so that correction can persist.
             _raw_target=$(awk -v n="$NICK" '$1==n{print $2;exit}' "$MAPFILE" 2>/dev/null)
-            TARGET=$(_apply_mac_resolution "$NICK" "$TARGET")
+
+            if (( FORCE_MAC )); then
+                _fm_mac=""
+                _fm_line=$(awk -v n="$NICK" '$1==n{print;exit}' "$MAPFILE" 2>/dev/null)
+                for _fm_field in $_fm_line; do [[ "$_fm_field" == mac=* ]] && _fm_mac="${_fm_field#mac=}"; done
+                if [[ -z "$_fm_mac" ]]; then
+                    printf "${RED}No MAC on record for '%s'.${RESET} Add one: s --set-mac %s <mac>\n" "$NICK" "$NICK"
+                    exit 1
+                fi
+                _fm_ip=$(_arp_ip_for_mac "$_fm_mac")
+                if [[ -z "$_fm_ip" ]]; then
+                    printf "${RED}MAC %s for '%s' isn't in this machine's ARP cache${RESET} — it may be off this subnet, or hasn't been seen recently.\n" "$_fm_mac" "$NICK"
+                    exit 1
+                fi
+                _fm_user=""; [[ "$TARGET" == *@* ]] && _fm_user="${TARGET%%@*}"
+                TARGET="${_fm_user:+${_fm_user}@}${_fm_ip}"
+                printf "${DIM}Resolved '%s' via MAC (%s) → %s${RESET}\n" "$NICK" "$_fm_mac" "$TARGET"
+            else
+                TARGET=$(_apply_mac_resolution "$NICK" "$TARGET")
+            fi
 
             _log_connection "$NICK" "$TARGET"
             # BatchMode pre-check: detects missing key access before SSH can fall
