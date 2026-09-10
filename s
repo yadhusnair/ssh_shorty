@@ -842,7 +842,7 @@ _wt_search_and_pick() {
     local -n _sp_items="$1"
     local title="$2" prompt="$3"
     if [[ ${#_sp_items[@]} -eq 0 ]]; then
-        whiptail --msgbox "Nothing to pick from yet." 8 50
+        whiptail --msgbox "Nothing to pick from yet." 8 50 1>&2
         return 1
     fi
 
@@ -860,7 +860,7 @@ _wt_search_and_pick() {
     fi
 
     local search
-    search=$(whiptail --title "$title" --inputbox "Search (blank = show full list):" 10 70 "" 3>&1 1>&2 2>&3) || return 1
+    search=$(whiptail --title "$title" --inputbox "Search (blank = show full list, Esc to cancel):" 10 70 "" 3>&1 1>&2 2>&3) || return 1
 
     local -a use_items=("${_sp_items[@]}")
     if [[ -n "$search" ]]; then
@@ -873,7 +873,7 @@ _wt_search_and_pick() {
             fi
         done
         if [[ ${#filtered[@]} -eq 0 ]]; then
-            whiptail --msgbox "Nothing matching '$search'." 8 50
+            whiptail --msgbox "No $title match '$search'.\n\nPress Enter to go back (Esc from there exits)." 11 60 1>&2
             return 1
         elif [[ ${#filtered[@]} -eq 2 ]]; then
             printf '%s' "${filtered[0]}"
