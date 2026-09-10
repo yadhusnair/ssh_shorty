@@ -824,6 +824,50 @@ _inplace_edit_file() {
     if "$@" > "$TF"; then mv "$TF" "$target"; else rm -f "$TF"; return 1; fi
 }
 
+# Generic search-then-pick over a whiptail menu's tag/description pairs.
+# $1 is a nameref to an "items" array (tag1 desc1 tag2 desc2 ...), $2 a
+# title, $3 the picker prompt. Asks for an optional search term first
+# (case-insensitive substring match against tag or description); a single
+# match jumps straight to it (no second screen — the search box IS the
+# picker), several matches narrow the menu to just those, no match says so.
+# An empty search shows the full list, same as before. Echoes the chosen
+# tag on success; returns 1 on cancel/no matches.
+_wt_search_and_pick() {
+    local -n _sp_items="$1"
+    local title="$2" prompt="$3"
+    if [[ ${#_sp_items[@]} -eq 0 ]]; then
+        whiptail --msgbox "Nothing to pick from yet." 8 50
+        return 1
+    fi
+
+    local search
+    search=$(whiptail --title "$title" --inputbox "Search (blank = show full list):" 10 70 "" 3>&1 1>&2 2>&3) || return 1
+
+    local -a use_items=("${_sp_items[@]}")
+    if [[ -n "$search" ]]; then
+        local search_lc="${search,,}" i tag_lc desc_lc
+        local -a filtered=()
+        for (( i=0; i<${#_sp_items[@]}; i+=2 )); do
+            tag_lc="${_sp_items[$i],,}"; desc_lc="${_sp_items[$((i+1))],,}"
+            if [[ "$tag_lc" == *"$search_lc"* || "$desc_lc" == *"$search_lc"* ]]; then
+                filtered+=("${_sp_items[$i]}" "${_sp_items[$((i+1))]}")
+            fi
+        done
+        if [[ ${#filtered[@]} -eq 0 ]]; then
+            whiptail --msgbox "Nothing matching '$search'." 8 50
+            return 1
+        elif [[ ${#filtered[@]} -eq 2 ]]; then
+            printf '%s' "${filtered[0]}"
+            return 0
+        fi
+        use_items=("${filtered[@]}")
+    fi
+
+    local n=$(( ${#use_items[@]} / 2 ))
+    whiptail --title "$title ($n)" --menu "$prompt (Esc to cancel)" 30 96 22 \
+        "${use_items[@]}" 3>&1 1>&2 2>&3
+}
+
 # ── whiptail menu/form editor for machines.txt ─────────────────────────────────
 # nmtui-style: a plain list you arrow through, Enter to act on one, simple
 # one-field-at-a-time forms (Tab/arrows, OK/Cancel — no keybindings to learn).
@@ -910,13 +954,7 @@ _wt_pick_device() {
     while IFS=' ' read -r nick target; do
         items+=("$nick" "$target")
     done < <(awk 'NF>=2 && $1!~/^#/{print $1, $2}' "$MAPFILE")
-    if [[ ${#items[@]} -eq 0 ]]; then
-        whiptail --msgbox "No devices in the fleet yet." 8 50
-        return 1
-    fi
-    local n=$(( ${#items[@]} / 2 ))
-    whiptail --title "Fleet ($n devices)" --menu "$prompt (Esc to cancel)" 30 96 22 \
-        "${items[@]}" 3>&1 1>&2 2>&3
+    _wt_search_and_pick items "Fleet" "$prompt"
 }
 
 _wt_edit_machines() {
@@ -997,13 +1035,7 @@ _wt_pick_path() {
     while IFS=' ' read -r tag alias path; do
         items+=("$tag/$alias" "$path")
     done < <(awk 'NF>=3 && $1!~/^#/{print $1, $2, $3}' "$PATHS_FILE")
-    if [[ ${#items[@]} -eq 0 ]]; then
-        whiptail --msgbox "No path aliases yet." 8 50
-        return 1
-    fi
-    local n=$(( ${#items[@]} / 2 ))
-    whiptail --title "Path aliases ($n)" --menu "$prompt (Esc to cancel)" 30 96 22 \
-        "${items[@]}" 3>&1 1>&2 2>&3
+    _wt_search_and_pick items "Path aliases" "$prompt"
 }
 
 _wt_edit_paths() {
@@ -1142,13 +1174,7 @@ _wt_pick_fav() {
         [[ -n "$FAV_VAR" ]] && desc="$desc  [+${FAV_VAR} ${FAV_POS}]"
         items+=("$FAV_ALIAS" "$desc")
     done < "$FAVS_FILE"
-    if [[ ${#items[@]} -eq 0 ]]; then
-        whiptail --msgbox "No favorites saved yet." 8 50
-        return 1
-    fi
-    local n=$(( ${#items[@]} / 2 ))
-    whiptail --title "Favorites ($n)" --menu "$prompt (Esc to cancel)" 30 96 22 \
-        "${items[@]}" 3>&1 1>&2 2>&3
+    _wt_search_and_pick items "Favorites" "$prompt"
 }
 
 _wt_edit_favs() {
