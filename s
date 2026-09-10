@@ -84,6 +84,9 @@ MCHARS='ｦｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃ01#!@%&*'
 
 _CURSOR_HIDDEN=0
 _anim_enabled()  { [[ -t 1 && -z "${NO_COLOR-}" && -z "${NO_ANIM-}" ]]; }
+# NO_FZF=1 forces the plain whiptail/fzf-less fallback even when fzf is
+# installed — for testing that fallback without fighting PATH for it.
+_fzf_enabled()   { [[ -z "${NO_FZF-}" ]] && command -v fzf &>/dev/null; }
 _hide_cursor()   { _CURSOR_HIDDEN=1; printf '\033[?25l'; }
 _show_cursor()   { _CURSOR_HIDDEN=0; printf '\033[?25h'; }
 _clear_line()   { printf '\033[2K\r'; }
@@ -843,7 +846,7 @@ _wt_search_and_pick() {
         return 1
     fi
 
-    if command -v fzf &>/dev/null; then
+    if _fzf_enabled; then
         local i choice
         local -a lines=()
         for (( i=0; i<${#_sp_items[@]}; i+=2 )); do
@@ -1511,7 +1514,7 @@ _check_update() {
 # No args → fzf device picker (falls back to usage if fzf not installed)
 if [[ -z "$1" ]]; then
     _require_mapfile
-    if command -v fzf &>/dev/null; then
+    if _fzf_enabled; then
         PICK=$(awk 'NF >= 2 && $1 !~ /^#/ {
             printf "%-24s  %-30s", $1, $2
             for (i=3; i<=NF; i++) if ($i ~ /^#/) printf "  \033[2m%s\033[0m", $i
