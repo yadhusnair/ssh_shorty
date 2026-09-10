@@ -754,6 +754,54 @@ _apply_mac_resolution() {
     printf '%s\n' "$target"
 }
 
+# Passive ARP-cache lookup: given a MAC, print the IP currently associated with it in
+# this machine's local ARP table (empty / non-zero exit if not present — no active
+# probing, so it only finds a MAC this machine has already talked to recently).
+_arp_ip_for_mac() {
+    local mac="$1"
+    command -v arp &>/dev/null || return 1
+    local ip
+    if [[ "$(uname)" == Darwin ]]; then
+        ip=$(arp -a 2>/dev/null | awk -v m="${mac,,}" 'tolower($0) ~ m {gsub(/[()]/,"",$2); print $2; exit}')
+    else
+        ip=$(arp -n 2>/dev/null | awk -v m="${mac,,}" 'tolower($0) ~ m {print $1; exit}')
+    fi
+    [[ -n "$ip" ]] || return 1
+    printf '%s' "$ip"
+}
+
+# Reverse of the above: given an IP, print its MAC from the local ARP cache.
+_arp_mac_for_ip() {
+    local ip="$1"
+    command -v arp &>/dev/null || return 1
+    local mac
+    if [[ "$(uname)" == Darwin ]]; then
+        mac=$(arp -n "$ip" 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i ~ /:.*:/) {print $i; exit}}')
+    else
+        mac=$(arp -n "$ip" 2>/dev/null | awk -v ip="$ip" '$1==ip{print $3; exit}')
+    fi
+    [[ -n "$mac" && "$mac" != "(incomplete)" ]] || return 1
+    printf '%s' "$mac"
+}
+
+# If nick has no mac= on record yet, look up its MAC for the IP it just connected to
+# and add it — so a later IP change can be auto-recovered via ARP. Runs in the
+# background (never delays login) and silently no-ops if the MAC isn't cached locally.
+_record_mac_if_missing() {
+    local nick="$1" ip="$2"
+    local line; line=$(awk -v n="$nick" '$1==n{print;exit}' "$MAPFILE" 2>/dev/null)
+    [[ -z "$line" ]] && return
+    local field
+    for field in $line; do [[ "$field" == mac=* ]] && return; done
+    local mac; mac=$(_arp_mac_for_ip "$ip") || return
+    (
+        _inplace_edit awk -v n="$nick" -v m="$mac" \
+            '$1==n && $0 !~ / mac=/ { print $0 " mac=" m; next } { print }' "$MAPFILE"
+        _sync_push
+    ) </dev/null >/dev/null 2>&1 &
+    disown $!
+}
+
 # Resolves a single nick (with prefix matching) and sets RESOLVED_NICK / RESOLVED_TARGET.
 # Returns 1 (with error message) if the nick is not found or ambiguous.
 _get_single_target() {
@@ -2797,8 +2845,12 @@ case "$1" in
             shift
 
             _load_device_opts "$NICK"
+            # The stored host as it literally sits in machines.txt, before any
+            # .local/ARP resolution — used below to detect when resolution moved
+            # the target to a different address, so that correction can persist.
+            _raw_target=$(awk -v n="$NICK" '$1==n{print $2;exit}' "$MAPFILE" 2>/dev/null)
             TARGET=$(_apply_mac_resolution "$NICK" "$TARGET")
-            
+
             _log_connection "$NICK" "$TARGET"
             # BatchMode pre-check: detects missing key access before SSH can fall
             # through to a password prompt. On success, also seeds the ControlMaster
@@ -2845,11 +2897,61 @@ case "$1" in
                     printf "${RED}Could not connect to %s (%s).${RESET}\n" "$NICK" "$TARGET"
                 fi
                 rm -f "$_pc_err"
-                exit 1
+
+                # If this device's MAC is on record, offer an ARP-based retry —
+                # covers the common case of its IP having changed since machines.txt
+                # was last updated. Only meaningful if that MAC is actually in this
+                # machine's local ARP cache right now (no active probing).
+                _cf_mac=""
+                _cf_line=$(awk -v n="$NICK" '$1==n{print;exit}' "$MAPFILE" 2>/dev/null)
+                for _cf_field in $_cf_line; do [[ "$_cf_field" == mac=* ]] && _cf_mac="${_cf_field#mac=}"; done
+                _cf_new_ip=""
+                [[ -n "$_cf_mac" ]] && _cf_new_ip=$(_arp_ip_for_mac "$_cf_mac")
+                _cf_cur_ip="${TARGET#*@}"
+
+                if [[ -z "$_cf_new_ip" || "$_cf_new_ip" == "$_cf_cur_ip" || ! -t 0 ]]; then
+                    exit 1
+                fi
+
+                printf "Found '%s' at a different IP via its known MAC: %s. Try it? [Y/n] " \
+                    "$NICK" "$_cf_new_ip"
+                read -r _cf_resp
+                [[ "${_cf_resp,,}" == "n" ]] && exit 1
+
+                _cf_user=""; [[ "$TARGET" == *@* ]] && _cf_user="${TARGET%%@*}"
+                _cf_new_target="${_cf_user:+${_cf_user}@}${_cf_new_ip}"
+                ssh -o BatchMode=yes -o ConnectTimeout=5 \
+                        "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" "$_cf_new_target" true \
+                        2>/dev/null || {
+                    printf "${RED}Still unreachable at %s.${RESET}\n" "$_cf_new_target"
+                    exit 1
+                }
+
+                TARGET="$_cf_new_target"
+                printf "${GREEN}Connected via MAC lookup.${RESET} Updating stored IP for '%s' → %s\n" \
+                    "$NICK" "$_cf_new_ip"
+                _inplace_edit awk -v n="$NICK" -v u="$_cf_user" -v h="$_cf_new_ip" \
+                    '$1==n { $2 = (u=="" ? h : u"@"h) } { print }' "$MAPFILE"
+                _sync_push
+            else
+                rm -f "$_pc_err"
+                _anim_enabled && _ora_succeed "Connected"
+                # ARP (via _apply_mac_resolution above) found this device at a
+                # different IP than what's stored — persist the correction so
+                # future connects don't need ARP to bail us out again.
+                if [[ "$TARGET" != "$_raw_target" ]]; then
+                    _cf_user=""; [[ "$TARGET" == *@* ]] && _cf_user="${TARGET%%@*}"
+                    _cf_ip="${TARGET#*@}"
+                    (
+                        _inplace_edit awk -v n="$NICK" -v u="$_cf_user" -v h="$_cf_ip" \
+                            '$1==n { $2 = (u=="" ? h : u"@"h) } { print }' "$MAPFILE"
+                        _sync_push
+                    ) </dev/null >/dev/null 2>&1 &
+                    disown $!
+                fi
             fi
-            rm -f "$_pc_err"
-            _anim_enabled && _ora_succeed "Connected"
             _log_remote_connection "$NICK" "$TARGET"
+            _record_mac_if_missing "$NICK" "${TARGET#*@}"
             _flush_stdin
             exec ssh "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" "$TARGET" "$@"
         fi
