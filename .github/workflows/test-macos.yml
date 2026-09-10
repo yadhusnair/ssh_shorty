@@ -62,6 +62,20 @@ jobs:
           sleep 1
           nc -z 127.0.0.1 2222 && echo "sshd is up on 127.0.0.1:2222" || { echo "sshd failed to start"; cat /tmp/sshd_test/sshd.log; exit 1; }
 
+          # 127.0.0.2 needs to actually be reachable too (citest2 uses it to dodge
+          # s --add's duplicate-IP guard, which only compares host, not port) —
+          # macOS routes all of 127.0.0.0/8 to lo0 but doesn't always assign the
+          # alias itself, unlike Linux, so bring it up explicitly if needed.
+          if ! nc -z 127.0.0.2 2222; then
+            echo "127.0.0.2:2222 not reachable yet — bringing up the loopback alias"
+            sudo ifconfig lo0 alias 127.0.0.2 up
+            sleep 1
+            nc -z 127.0.0.2 2222 && echo "sshd is up on 127.0.0.2:2222" \
+              || { echo "sshd still unreachable on 127.0.0.2"; cat /tmp/sshd_test/sshd.log; exit 1; }
+          else
+            echo "sshd is up on 127.0.0.2:2222"
+          fi
+
       - name: Register the local sshd as two devices (real s --add, not hand-edited machines.txt)
         run: |
           export PATH="$HOME/.local/bin:$PATH"
@@ -97,14 +111,18 @@ jobs:
           echo "--- windows ---"
           tmux list-windows -t "$session"
           win_count=$(tmux list-windows -t "$session" | wc -l | tr -d ' ')
-          [[ "$win_count" -eq 2 ]] || { echo "expected 2 tmux windows, got $win_count"; exit 1; }
 
+          # Capture whatever panes exist BEFORE asserting, so a failure still
+          # tells us why (e.g. a window's ssh command errored and tmux's default
+          # remain-on-exit=off closed the window before we ever asserted).
           for nick in citest1 citest2; do
             echo "--- pane content: $nick ---"
-            tmux capture-pane -p -t "${session}:${nick}"
+            tmux capture-pane -p -t "${session}:${nick}" 2>&1 || echo "(no such window: $nick)"
           done
 
-          tmux kill-session -t "$session"
+          tmux kill-session -t "$session" 2>/dev/null || true
+
+          [[ "$win_count" -eq 2 ]] || { echo "expected 2 tmux windows, got $win_count"; exit 1; }
 
       - name: Clean up local sshd
         if: always()
