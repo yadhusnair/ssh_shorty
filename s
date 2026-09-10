@@ -427,6 +427,8 @@ usage() {
     printf "  s --add <nickname> <user@ip> [#tags]        add a device\n"
     printf "  s --set <nickname> <user@ip>                update a device's IP\n"
     printf "  s --set-mac <nickname> <mac>                set/update a device's MAC address\n"
+    printf "  s --add-alt <nickname> <user@host>          add an alternate address (LAN/VPN/etc.)\n"
+    printf "  s --remove-alt <nickname> <user@host>       remove an alternate address\n"
     printf "  s -d <alias> <nick> [local_dest]            download via path alias\n"
     printf "  s --view <nick> <path>                      stream remote file to local viewer\n"
     printf "  s -u <local-path> <nick>[:<alias|path>]    upload file/dir (alias resolved)\n"
@@ -949,29 +951,31 @@ _wt_load_device() {
     # `|` on purpose, not a tab — bash's `read` treats tab as "IFS whitespace"
     # regardless of what IFS is set to, silently collapsing consecutive empty
     # fields (e.g. an empty PORT before a non-empty TAGS) into the wrong slots.
-    IFS='|' read -r WT_TARGET WT_PORT WT_KEY WT_MAC WT_TAGS WT_PRESERVE < <(
+    IFS='|' read -r WT_TARGET WT_PORT WT_KEY WT_MAC WT_ALTS WT_TAGS WT_PRESERVE < <(
         awk -v n="$nick" '
             $1==n {
-                target=$2; port=""; key=""; mac=""; tags=""; preserve=""
+                target=$2; port=""; key=""; mac=""; alts=""; tags=""; preserve=""
                 for (i=3;i<=NF;i++) {
                     f=$i
                     if (f ~ /^port=/)      { sub(/^port=/,"",f); port=f }
                     else if (f ~ /^key=/)  { sub(/^key=/,"",f); key=f }
                     else if (f ~ /^mac=/)  { sub(/^mac=/,"",f); mac=f }
+                    else if (f ~ /^alt=/)  { sub(/^alt=/,"",f); alts=(alts==""?f:alts" "f) }
                     else if (f ~ /^#/)     { sub(/^#/,"",f); tags=(tags==""?f:tags" "f) }
                     else                   { preserve=(preserve==""?f:preserve" "f) }
                 }
-                printf "%s|%s|%s|%s|%s|%s\n", target, port, key, mac, tags, preserve
+                printf "%s|%s|%s|%s|%s|%s|%s\n", target, port, key, mac, alts, tags, preserve
                 exit
             }' "$MAPFILE")
 }
 
 _wt_save_device() {
-    local nick="$1" target="$2" port="$3" key="$4" mac="$5" tags="$6" preserve="$7" is_new="${8:-false}"
+    local nick="$1" target="$2" port="$3" key="$4" mac="$5" alts="$6" tags="$7" preserve="$8" is_new="${9:-false}"
     local line="$nick $target" t
     [[ -n "$port" ]] && line="$line port=$port"
     [[ -n "$key" ]]  && line="$line key=$key"
     [[ -n "$mac" ]]  && line="$line mac=$mac"
+    for t in $alts; do line="$line alt=$t"; done
     [[ -n "$preserve" ]] && line="$line $preserve"
     for t in $tags; do line="$line #$t"; done
     if [[ "$is_new" == true ]]; then
@@ -982,12 +986,13 @@ _wt_save_device() {
 }
 
 _wt_edit_device() {
-    local nick="$1" target port key mac tags
+    local nick="$1" target port key mac alts tags
     _wt_load_device "$nick"
     target=$(whiptail --title "Edit: $nick" --inputbox "Target (user@host):" 10 60 "$WT_TARGET" 3>&1 1>&2 2>&3) || return 1
     port=$(whiptail --title "Edit: $nick" --inputbox "Port (blank = default 22):" 10 60 "$WT_PORT" 3>&1 1>&2 2>&3) || return 1
     key=$(whiptail --title "Edit: $nick" --inputbox "SSH key path (blank = default):" 10 60 "$WT_KEY" 3>&1 1>&2 2>&3) || return 1
     mac=$(whiptail --title "Edit: $nick" --inputbox "MAC address (blank = none, e.g. aa:bb:cc:dd:ee:ff):" 10 70 "$WT_MAC" 3>&1 1>&2 2>&3) || return 1
+    alts=$(whiptail --title "Edit: $nick" --inputbox "Alt addresses — other ways to reach it (space-separated user@host, e.g. VPN/WireGuard IPs, blank = none):" 11 76 "$WT_ALTS" 3>&1 1>&2 2>&3) || return 1
     tags=$(whiptail --title "Edit: $nick" --inputbox "Tags, space-separated, no # (e.g. fm sherpa):" 10 60 "$WT_TAGS" 3>&1 1>&2 2>&3) || return 1
     if [[ -z "$target" ]]; then
         whiptail --msgbox "Target can't be empty — no changes made." 8 50
@@ -997,11 +1002,11 @@ _wt_edit_device() {
         whiptail --msgbox "That doesn't look like a valid MAC address (expected aa:bb:cc:dd:ee:ff) — no changes made." 9 70
         return 1
     fi
-    _wt_save_device "$nick" "$target" "$port" "$key" "$mac" "$tags" "$WT_PRESERVE"
+    _wt_save_device "$nick" "$target" "$port" "$key" "$mac" "$alts" "$tags" "$WT_PRESERVE"
 }
 
 _wt_add_device() {
-    local nick target port key mac tags
+    local nick target port key mac alts tags
     nick=$(whiptail --title "Add device" --inputbox "Nickname:" 10 60 "" 3>&1 1>&2 2>&3) || return 1
     [[ -z "$nick" ]] && return 1
     if _nick_exists "$nick"; then
@@ -1020,8 +1025,9 @@ _wt_add_device() {
         whiptail --msgbox "That doesn't look like a valid MAC address (expected aa:bb:cc:dd:ee:ff) — not saved." 9 70
         mac=""
     fi
+    alts=$(whiptail --title "Add: $nick" --inputbox "Alt addresses — other ways to reach it (space-separated user@host, e.g. VPN/WireGuard IPs, blank = none):" 11 76 "" 3>&1 1>&2 2>&3) || return 1
     tags=$(whiptail --title "Add: $nick" --inputbox "Tags, space-separated, no # (e.g. fm sherpa):" 10 60 "" 3>&1 1>&2 2>&3) || return 1
-    _wt_save_device "$nick" "$target" "$port" "$key" "$mac" "$tags" "" true
+    _wt_save_device "$nick" "$target" "$port" "$key" "$mac" "$alts" "$tags" "" true
 }
 
 _wt_delete_device() {
@@ -1030,31 +1036,33 @@ _wt_delete_device() {
     _inplace_edit awk -v n="$nick" '$1!=n' "$MAPFILE"
 }
 
-# Shows every column (target, port, key, mac, tags) so it's obvious at a glance
-# which devices are still missing a mac= — not just nickname + user@ip.
+# Shows every column (target, port, key, mac, alts, tags) so it's obvious at a
+# glance which devices are still missing a mac= — not just nickname + user@ip.
 _wt_pick_device() {
     local prompt="$1"
     local -a items=()
-    local nick target port key mac tags desc
-    while IFS='|' read -r nick target port key mac tags; do
+    local nick target port key mac alts tags desc
+    while IFS='|' read -r nick target port key mac alts tags; do
         [[ -z "$nick" ]] && continue
         desc="$target"
         [[ -n "$port" ]] && desc="$desc  port=$port"
         [[ -n "$key" ]]  && desc="$desc  key=$key"
         desc="$desc  mac=${mac:-none}"
+        [[ -n "$alts" ]] && desc="$desc  alts=$(printf '%s' "$alts" | wc -w)"
         [[ -n "$tags" ]] && desc="$desc  #$tags"
         items+=("$nick" "$desc")
     done < <(awk '
         NF>=2 && $1!~/^#/ {
-            nick=$1; target=$2; port=""; key=""; mac=""; tags=""
+            nick=$1; target=$2; port=""; key=""; mac=""; alts=""; tags=""
             for (i=3;i<=NF;i++) {
                 f=$i
                 if (f ~ /^port=/)      { sub(/^port=/,"",f); port=f }
                 else if (f ~ /^key=/)  { sub(/^key=/,"",f); key=f }
                 else if (f ~ /^mac=/)  { sub(/^mac=/,"",f); mac=f }
+                else if (f ~ /^alt=/)  { sub(/^alt=/,"",f); alts=(alts==""?f:alts" "f) }
                 else if (f ~ /^#/)     { sub(/^#/,"",f); tags=(tags==""?f:tags" "f) }
             }
-            printf "%s|%s|%s|%s|%s|%s\n", nick, target, port, key, mac, tags
+            printf "%s|%s|%s|%s|%s|%s|%s\n", nick, target, port, key, mac, alts, tags
         }' "$MAPFILE")
     _wt_search_and_pick items "Fleet" "$prompt"
 }
@@ -2292,6 +2300,38 @@ case "$1" in
         _sync_push
         ;;
 
+    --add-alt)
+        [[ -z "$2" || -z "$3" ]] && {
+            printf "Usage: s --add-alt <nickname> <user@host>\n"; exit 1; }
+        _require_mapfile
+        NICK="$2"; ALT="$3"
+        _nick_exists "$NICK" || {
+            printf "Nickname '%s' not found. Use --add to add it.\n" "$NICK"; exit 1; }
+        [[ "$ALT" != *@* ]] && {
+            printf "Invalid address '%s' — expected user@host or user@ip.\n" "$ALT"; exit 1; }
+        _aa_line=$(awk -v n="$NICK" '$1==n{print;exit}' "$MAPFILE")
+        for _aa_field in $_aa_line; do
+            [[ "$_aa_field" == "alt=$ALT" ]] && { printf "'%s' already has that alt address.\n" "$NICK"; exit 1; }
+        done
+        _inplace_edit awk -v n="$NICK" -v a="$ALT" \
+            '$1==n { print $0 " alt=" a; next } { print }' "$MAPFILE"
+        printf "Added alt address for %s: %s\n" "$NICK" "$ALT"
+        _sync_push
+        ;;
+
+    --remove-alt)
+        [[ -z "$2" || -z "$3" ]] && {
+            printf "Usage: s --remove-alt <nickname> <user@host>\n"; exit 1; }
+        _require_mapfile
+        NICK="$2"; ALT="$3"
+        _nick_exists "$NICK" || {
+            printf "Nickname '%s' not found.\n" "$NICK"; exit 1; }
+        _inplace_edit awk -v n="$NICK" -v a="alt=$ALT" \
+            '$1==n { for(i=3;i<=NF;i++) if ($i==a) $i=""; $0=$0; gsub(/  +/," "); sub(/[[:space:]]+$/,"") } { print }' "$MAPFILE"
+        printf "Removed alt address for %s: %s\n" "$NICK" "$ALT"
+        _sync_push
+        ;;
+
     --rename)
         [[ -z "$2" || -z "$3" ]] && {
             printf "Usage: s --rename <old-nickname> <new-nickname>\n"; exit 1; }
@@ -2983,41 +3023,78 @@ case "$1" in
                 fi
                 rm -f "$_pc_err"
 
-                # If this device's MAC is on record, offer an ARP-based retry —
-                # covers the common case of its IP having changed since machines.txt
-                # was last updated. Only meaningful if that MAC is actually in this
-                # machine's local ARP cache right now (no active probing).
-                _cf_mac=""
-                _cf_line=$(awk -v n="$NICK" '$1==n{print;exit}' "$MAPFILE" 2>/dev/null)
-                for _cf_field in $_cf_line; do [[ "$_cf_field" == mac=* ]] && _cf_mac="${_cf_field#mac=}"; done
-                _cf_new_ip=""
-                [[ -n "$_cf_mac" ]] && _cf_new_ip=$(_arp_ip_for_mac "$_cf_mac")
-                _cf_cur_ip="${TARGET#*@}"
+                # Known alternate paths (alt=) to this device — e.g. LAN + VPN +
+                # WireGuard addresses for the same box. Tried automatically, in
+                # order, no prompt (these are deliberately configured, not a
+                # guess) before falling back to the MAC-based guess below.
+                _af_winner=""
+                _af_line=$(awk -v n="$NICK" '$1==n{print;exit}' "$MAPFILE" 2>/dev/null)
+                for _af_field in $_af_line; do
+                    [[ "$_af_field" == alt=* ]] || continue
+                    _af_cand="${_af_field#alt=}"
+                    if ssh -o BatchMode=yes -o ConnectTimeout=5 \
+                            "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" "$_af_cand" true \
+                            2>/dev/null; then
+                        _af_winner="$_af_cand"
+                        break
+                    fi
+                done
 
-                if [[ -z "$_cf_new_ip" || "$_cf_new_ip" == "$_cf_cur_ip" || ! -t 0 ]]; then
-                    exit 1
+                if [[ -n "$_af_winner" ]]; then
+                    printf "${GREEN}Connected via alt address.${RESET} Promoting '%s' → %s\n" \
+                        "$NICK" "$_af_winner"
+                    _af_old_primary="$_raw_target"
+                    TARGET="$_af_winner"
+                    _inplace_edit awk -v n="$NICK" -v newp="$_af_winner" -v oldp="$_af_old_primary" '
+                        $1==n {
+                            $2=newp
+                            for(i=3;i<=NF;i++) if ($i=="alt="newp) $i=""
+                            $0=$0
+                            gsub(/  +/," ")
+                            sub(/[[:space:]]+$/,"")
+                            print $0 " alt=" oldp
+                            next
+                        }
+                        { print }
+                    ' "$MAPFILE"
+                    _sync_push
+                else
+                    # If this device's MAC is on record, offer an ARP-based retry —
+                    # covers the common case of its IP having changed since machines.txt
+                    # was last updated. Only meaningful if that MAC is actually in this
+                    # machine's local ARP cache right now (no active probing).
+                    _cf_mac=""
+                    _cf_line=$(awk -v n="$NICK" '$1==n{print;exit}' "$MAPFILE" 2>/dev/null)
+                    for _cf_field in $_cf_line; do [[ "$_cf_field" == mac=* ]] && _cf_mac="${_cf_field#mac=}"; done
+                    _cf_new_ip=""
+                    [[ -n "$_cf_mac" ]] && _cf_new_ip=$(_arp_ip_for_mac "$_cf_mac")
+                    _cf_cur_ip="${TARGET#*@}"
+
+                    if [[ -z "$_cf_new_ip" || "$_cf_new_ip" == "$_cf_cur_ip" || ! -t 0 ]]; then
+                        exit 1
+                    fi
+
+                    printf "Found '%s' at a different IP via its known MAC: %s. Try it? [Y/n] " \
+                        "$NICK" "$_cf_new_ip"
+                    read -r _cf_resp
+                    [[ "${_cf_resp,,}" == "n" ]] && exit 1
+
+                    _cf_user=""; [[ "$TARGET" == *@* ]] && _cf_user="${TARGET%%@*}"
+                    _cf_new_target="${_cf_user:+${_cf_user}@}${_cf_new_ip}"
+                    ssh -o BatchMode=yes -o ConnectTimeout=5 \
+                            "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" "$_cf_new_target" true \
+                            2>/dev/null || {
+                        printf "${RED}Still unreachable at %s.${RESET}\n" "$_cf_new_target"
+                        exit 1
+                    }
+
+                    TARGET="$_cf_new_target"
+                    printf "${GREEN}Connected via MAC lookup.${RESET} Updating stored IP for '%s' → %s\n" \
+                        "$NICK" "$_cf_new_ip"
+                    _inplace_edit awk -v n="$NICK" -v u="$_cf_user" -v h="$_cf_new_ip" \
+                        '$1==n { $2 = (u=="" ? h : u"@"h) } { print }' "$MAPFILE"
+                    _sync_push
                 fi
-
-                printf "Found '%s' at a different IP via its known MAC: %s. Try it? [Y/n] " \
-                    "$NICK" "$_cf_new_ip"
-                read -r _cf_resp
-                [[ "${_cf_resp,,}" == "n" ]] && exit 1
-
-                _cf_user=""; [[ "$TARGET" == *@* ]] && _cf_user="${TARGET%%@*}"
-                _cf_new_target="${_cf_user:+${_cf_user}@}${_cf_new_ip}"
-                ssh -o BatchMode=yes -o ConnectTimeout=5 \
-                        "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" "$_cf_new_target" true \
-                        2>/dev/null || {
-                    printf "${RED}Still unreachable at %s.${RESET}\n" "$_cf_new_target"
-                    exit 1
-                }
-
-                TARGET="$_cf_new_target"
-                printf "${GREEN}Connected via MAC lookup.${RESET} Updating stored IP for '%s' → %s\n" \
-                    "$NICK" "$_cf_new_ip"
-                _inplace_edit awk -v n="$NICK" -v u="$_cf_user" -v h="$_cf_new_ip" \
-                    '$1==n { $2 = (u=="" ? h : u"@"h) } { print }' "$MAPFILE"
-                _sync_push
             else
                 rm -f "$_pc_err"
                 _anim_enabled && _ora_succeed "Connected"

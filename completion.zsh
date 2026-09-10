@@ -29,6 +29,8 @@ _ssh_shorty() {
     '--add:add a new device'
     '--set:update a device IP'
     '--set-mac:set/update a device MAC address'
+    '--add-alt:add an alternate address for a device'
+    '--remove-alt:remove an alternate address from a device'
     '--rename:rename a device'
     '--remove:remove a device'
     '--tag:add a tag to a device'
@@ -143,7 +145,7 @@ _ssh_shorty() {
     fi
   else
     case "$first" in
-      --set|--set-mac|--rename|--remove|--tunnel|-t)
+      --set|--set-mac|--add-alt|--remove-alt|--rename|--remove|--tunnel|-t)
         (( CURRENT == 3 )) && _describe 'machine' machines
         ;;
       --ping|-p)
