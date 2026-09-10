@@ -2251,10 +2251,29 @@ case "$1" in
     --sync)
         if [[ -z "$SYNC_HOST" ]]; then
             printf "SYNC_HOST not configured.\n"
-            printf "Add this line to %s/config:\n\n" "$CONFIG_DIR"
-            printf "  SYNC_HOST=user@hostname\n\n"
-            printf "Then re-run:  s --sync\n"
-            exit 1
+            if [[ -t 0 ]]; then
+                printf "Want to add one now? [y/N] "
+                read -r _sync_setup_resp
+                if [[ "${_sync_setup_resp,,}" != "y" ]]; then
+                    printf "Aborted.\n"
+                    exit 0
+                fi
+                printf "SYNC_HOST (e.g. user@hostname): "
+                read -r _sync_setup_host
+                if [[ -z "$_sync_setup_host" ]]; then
+                    printf "Empty value — aborted.\n"
+                    exit 1
+                fi
+                mkdir -p "$CONFIG_DIR"
+                printf 'SYNC_HOST="%s"\n' "$_sync_setup_host" >> "$CONFIG_DIR/config"
+                SYNC_HOST="$_sync_setup_host"
+                printf "${GREEN}Saved.${RESET} SYNC_HOST=%s\n" "$SYNC_HOST"
+            else
+                printf "Add this line to %s/config:\n\n" "$CONFIG_DIR"
+                printf "  SYNC_HOST=user@hostname\n\n"
+                printf "Then re-run:  s --sync\n"
+                exit 1
+            fi
         fi
 
         if _anim_enabled; then
