@@ -785,7 +785,10 @@ _arp_mac_for_ip() {
     else
         mac=$(arp -n "$ip" 2>/dev/null | awk -v ip="$ip" '$1==ip{print $3; exit}')
     fi
-    [[ -n "$mac" && "$mac" != "(incomplete)" ]] || return 1
+    # When arp has no entry at all for the IP, it prints a message like
+    # "<ip> (<ip>) -- no entry" — field 3 of that is the literal string "--",
+    # not a MAC. Only accept something that actually looks like a MAC.
+    [[ "$mac" =~ ^([0-9A-Fa-f]{1,2}:){5}[0-9A-Fa-f]{1,2}$ ]] || return 1
     printf '%s' "$mac"
 }
 
