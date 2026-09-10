@@ -1,0 +1,67 @@
+name: Test macOS install (manual)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show stock bash version
+        run: |
+          echo "Stock /bin/bash:"
+          /bin/bash --version | head -1
+
+      - name: Run install.sh (simulates curl one-liner on a fresh Mac)
+        run: |
+          bash install.sh
+
+      - name: Verify installed s runs (mapfile / ${var,,} / local -n need bash4+)
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          echo "Installed s shebang:"
+          head -1 "$HOME/.local/bin/s"
+          echo ""
+          echo "bash resolved by that shebang:"
+          "$(head -1 "$HOME/.local/bin/s" | sed 's/^#!//')" --version | head -1
+          echo ""
+          echo "s --help:"
+          s --help
+          echo ""
+          echo "s --list:"
+          s --list
+
+      - name: Build local tarball + formula for a real brew install test
+        run: |
+          VER="$(cat VERSION)"
+          git archive --prefix="ssh_shorty-${VER}/" HEAD | gzip > "/tmp/ssh_shorty-${VER}.tar.gz"
+          SHA=$(shasum -a 256 "/tmp/ssh_shorty-${VER}.tar.gz" | awk '{print $1}')
+          mkdir -p /tmp/homebrew-test/Formula
+          sed \
+            -e "s|url \".*\"|url \"file:///tmp/ssh_shorty-${VER}.tar.gz\"|" \
+            -e "s|sha256 \".*\"|sha256 \"${SHA}\"|" \
+            -e "s|version \".*\"|version \"${VER}\"|" \
+            Formula/s.rb > /tmp/homebrew-test/Formula/s.rb
+          echo "--- formula used ---"
+          cat /tmp/homebrew-test/Formula/s.rb
+
+      - name: brew install s (from local tarball, exercises depends_on bash + inreplace)
+        run: |
+          brew install --formula /tmp/homebrew-test/Formula/s.rb --verbose
+
+      - name: Verify brew-installed s
+        run: |
+          BREW_S="$(brew --prefix)/bin/s"
+          echo "brew-installed s shebang:"
+          head -1 "$BREW_S"
+          echo ""
+          echo "s --help (via brew):"
+          "$BREW_S" --help
+          echo ""
+          echo "s --list (via brew):"
+          "$BREW_S" --list
+
+      - name: brew test
+        run: brew test s
