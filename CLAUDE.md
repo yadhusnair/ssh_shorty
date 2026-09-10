@@ -88,3 +88,42 @@ Or run `bash install.sh` (user) / `bash install-admin.sh` (admin).
 
 - Bump `VERSION` in both `s` and `VERSION` file together (s-admin reads `VERSION` from the same repo but has its own hardcoded version string — bump both)
 - After bumping: `git add s s-admin VERSION && git commit && git push && make release`
+
+## graphify
+
+This project's knowledge graph does NOT live inside this repo — per the routing rule in
+`~/.claude/CLAUDE.md`, it lives at the central path:
+`~/Desktop/Yadhusnair/graphify/personal/ssh_shorty/graphify-out/` (Obsidian notes at `~/Desktop/Yadhusnair/life_notes/graphify/personal/ssh_shorty/`).
+
+Rules:
+- For a narrow, specific lookup (find a function, check a config value, trace one call
+  site) — default to grep/Read directly. It is cheaper and more precise than a graph query
+  for this case. Confirmed live 2026-07-23: querying the graph for one specific function
+  returned 40+ loosely-related node names with no synthesized answer, truncated by the
+  token budget — actually answering still required reading the function directly, so the
+  query added cost without removing the read.
+- For a broad, cross-file question, check this project's own CLAUDE.md architecture
+  writeup FIRST (already loaded in context, already synthesized into prose — cheaper than
+  any query). Confirmed live 2026-07-23: a graph query for a genuinely broad question
+  ("how does sherpa pool management interact across 3 named files") returned 357 nodes
+  (62 shown, 295 cut by the token budget) as a bare file/line/community list with no
+  synthesized explanation — still required reading the actual functions afterward, so it
+  added cost without removing the read.
+- Only fall back to `graphify query "<question>" --graph ~/Desktop/Yadhusnair/graphify/personal/ssh_shorty/graphify-out/graph.json` (or
+  `graphify path "<A>" "<B>"` / `graphify explain "<concept>"`) if CLAUDE.md does not cover
+  the question AND grep/Read cannot find a starting point either — i.e. genuinely unfamiliar
+  territory in the codebase, not a case grep or the existing docs already handle.
+- If `~/Desktop/Yadhusnair/graphify/personal/ssh_shorty/graphify-out/wiki/index.md` exists, use it for broad navigation instead of raw source browsing.
+- Read `~/Desktop/Yadhusnair/graphify/personal/ssh_shorty/graphify-out/GRAPH_REPORT.md` only for broad architecture review or when query/path/explain don't surface enough.
+- After modifying code, run `graphify update` yourself for the routine case: a normal edit
+  session touching a handful of files, re-extracted via AST only — no LLM involved, cheap and
+  fast (`cd ~/Desktop/Yadhusnair/graphify/personal/ssh_shorty && graphify update`).
+- Only delegate to Antigravity (agy) for a genuinely large rebuild: a full re-extraction from
+  scratch, `--mode deep` semantic extraction, or anything that would otherwise dispatch many
+  subagents to read/summarize a large corpus. Delegating a routine small update is a measured
+  net token loss, not a saving — confirmed live 2026-07-23 (a failed delegate attempt alone cost
+  ~88K tokens for zero result, and even a successful one returns a verbose trace that lands
+  entirely in Claude's own context regardless). When you do delegate, prefer the
+  `antigravity-delegate` subagent; if it fails due to `CLAUDE_PLUGIN_ROOT` being unset in this
+  environment, fall back to invoking `agy-delegate.sh` directly with that variable exported
+  manually.
