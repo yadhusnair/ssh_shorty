@@ -299,10 +299,14 @@ echo "  Installed: $BASH_COMPLETIONS_DIR/s"
 FALLBACK="$CONFIG_DIR/completion.bash"
 cp "$SCRIPT_DIR/completion.bash" "$FALLBACK"
 
-if [ -f "$HOME/.bashrc" ]; then
-    # Ensure bash-completion package is sourced before our file
-    if ! grep -q 'bash_completion' "$HOME/.bashrc"; then
-        cat >> "$HOME/.bashrc" << 'EOF'
+# touch first — a brand-new machine/account may not have a .bashrc yet, and
+# without this the whole block below used to be silently skipped, leaving
+# the completion file installed but never actually sourced anywhere.
+touch "$HOME/.bashrc"
+
+# Ensure bash-completion package is sourced before our file
+if ! grep -q 'bash_completion' "$HOME/.bashrc"; then
+    cat >> "$HOME/.bashrc" << 'EOF'
 
 # bash-completion
 if [ -f /usr/share/bash-completion/bash_completion ]; then
@@ -311,13 +315,12 @@ elif [ -f /etc/bash_completion ]; then
     . /etc/bash_completion
 fi
 EOF
-        echo "  Updated:   ~/.bashrc (bash-completion)"
-    fi
+    echo "  Updated:   ~/.bashrc (bash-completion)"
+fi
 
-    if ! grep -q 'ssh_shorty/completion' "$HOME/.bashrc"; then
-        printf '\n# ssh_shorty\n[ -f "%s" ] && source "%s"\n' "$FALLBACK" "$FALLBACK" >> "$HOME/.bashrc"
-        echo "  Updated:   ~/.bashrc (completion)"
-    fi
+if ! grep -q 'ssh_shorty/completion' "$HOME/.bashrc"; then
+    printf '\n# ssh_shorty\n[ -f "%s" ] && source "%s"\n' "$FALLBACK" "$FALLBACK" >> "$HOME/.bashrc"
+    echo "  Updated:   ~/.bashrc (completion)"
 fi
 
 # ── Bash menu-complete (Tab cycling) ──────────────────────────────────────────
