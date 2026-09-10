@@ -438,6 +438,7 @@ usage() {
     printf "  s --untag <nickname> <tag>                  remove a tag from a device\n"
     printf "  s --sync                                    pull/push fleet from SYNC_HOST\n"
     printf "  s --ping <nick|@group|prefix|--all>         check reachability\n"
+    printf "  s --oneshot                                 fleet-wide MAC/IP reconciliation\n"
     printf "  s --poll <nickname> [--timeout <sec>]       wait until online then connect\n"
     printf "  s --register [pubkey]                       submit your SSH public key for admin review\n"
     printf "  s --keydeploy <nick|@group>                 deploy SSH key\n"
@@ -2575,6 +2576,94 @@ case "$1" in
                   fi ) &
             done
             wait
+        fi
+        ;;
+
+    --oneshot)
+        _require_mapfile
+        # Fleet-wide MAC/IP reconciliation, run once on demand (vs. the
+        # per-connect auto-heal, which only touches a device you actually log
+        # into). For every device: reachable at its stored IP + no mac= on
+        # record → record the MAC. Unreachable at its stored IP + mac= on
+        # record and ARP finds it elsewhere + that IP is actually reachable →
+        # update the stored IP. Uses a light TCP probe (like --ping), not a
+        # full SSH login, so it works even without key access yet.
+        declare -a _os_nicks=()
+        while IFS= read -r _os_n; do _os_nicks+=("$_os_n"); done \
+            < <(awk 'NF>=2 && $1!~/^#/{print $1}' "$MAPFILE")
+        _os_total=${#_os_nicks[@]}
+        if (( _os_total == 0 )); then
+            printf "No devices in the fleet.\n"; exit 0
+        fi
+        printf "${BOLD}One-shot MAC/IP reconciliation${RESET} — checking %d device(s)...\n" "$_os_total"
+
+        _os_results_dir=$(mktemp -d "$CONFIG_DIR/.oneshot.XXXXXX")
+        for _os_nick in "${_os_nicks[@]}"; do
+            _throttle 15
+            (
+                _os_line=$(awk -v n="$_os_nick" '$1==n{print;exit}' "$MAPFILE")
+                _os_stored_target=$(printf '%s' "$_os_line" | awk '{print $2}')
+                _os_stored_ip="${_os_stored_target#*@}"
+                _os_user=""; [[ "$_os_stored_target" == *@* ]] && _os_user="${_os_stored_target%%@*}"
+                _os_mac="" _os_port=22
+                for _os_field in $_os_line; do
+                    [[ "$_os_field" == mac=* ]]  && _os_mac="${_os_field#mac=}"
+                    [[ "$_os_field" == port=* ]] && _os_port="${_os_field#port=}"
+                done
+
+                if nc -z -w2 "$_os_stored_ip" "$_os_port" &>/dev/null; then
+                    if [[ -z "$_os_mac" ]]; then
+                        _os_found_mac=$(_arp_mac_for_ip "$_os_stored_ip")
+                        if [[ -n "$_os_found_mac" ]]; then
+                            printf 'mac_added %s\n' "$_os_found_mac" > "$_os_results_dir/$_os_nick"
+                        fi
+                    fi
+                else
+                    if [[ -n "$_os_mac" ]]; then
+                        _os_new_ip=$(_arp_ip_for_mac "$_os_mac")
+                        if [[ -n "$_os_new_ip" && "$_os_new_ip" != "$_os_stored_ip" ]] \
+                                && nc -z -w2 "$_os_new_ip" "$_os_port" &>/dev/null; then
+                            printf 'ip_updated %s\n' "$_os_new_ip" > "$_os_results_dir/$_os_nick"
+                        else
+                            printf 'unreachable\n' > "$_os_results_dir/$_os_nick"
+                        fi
+                    else
+                        printf 'unreachable\n' > "$_os_results_dir/$_os_nick"
+                    fi
+                fi
+            ) &
+        done
+        wait
+
+        _os_mac_added=0 _os_ip_updated=0 _os_unreachable=0
+        for _os_nick in "${_os_nicks[@]}"; do
+            _os_res_file="$_os_results_dir/$_os_nick"
+            [[ -f "$_os_res_file" ]] || continue
+            read -r _os_kind _os_val < "$_os_res_file"
+            case "$_os_kind" in
+                mac_added)
+                    _inplace_edit awk -v n="$_os_nick" -v m="$_os_val" \
+                        '$1==n && $0 !~ / mac=/ { print $0 " mac=" m; next } { print }' "$MAPFILE"
+                    printf "  ${GREEN}+mac${RESET}    %-20s → %s\n" "$_os_nick" "$_os_val"
+                    (( _os_mac_added++ ))
+                    ;;
+                ip_updated)
+                    _inplace_edit awk -v n="$_os_nick" -v h="$_os_val" \
+                        '$1==n { u=$2; sub(/@.*/,"@",u); if (u !~ /@$/) u=""; $2 = u h } { print }' "$MAPFILE"
+                    printf "  ${GREEN}~ip${RESET}     %-20s → %s\n" "$_os_nick" "$_os_val"
+                    (( _os_ip_updated++ ))
+                    ;;
+                unreachable)
+                    (( _os_unreachable++ ))
+                    ;;
+            esac
+        done
+        rm -rf "$_os_results_dir"
+
+        printf "\n${BOLD}Done.${RESET} %d MAC(s) recorded, %d IP(s) updated, %d unreachable (of %d)\n" \
+            "$_os_mac_added" "$_os_ip_updated" "$_os_unreachable" "$_os_total"
+        if (( _os_mac_added > 0 || _os_ip_updated > 0 )); then
+            _sync_push
         fi
         ;;
 

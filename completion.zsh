@@ -37,6 +37,7 @@ _ssh_shorty() {
     '--untag:remove a tag from a device'
     '--sync:pull/push fleet from SYNC_HOST'
     '--ping:check reachability'
+    '--oneshot:fleet-wide MAC/IP reconciliation'
     '--poll:wait until online then connect'
     '--edit:open machines.txt in $EDITOR'
     '--paths:open machine-paths.txt and sync'
