@@ -33,23 +33,25 @@ jobs:
           echo "s --list:"
           s --list
 
-      - name: Build local tarball + formula for a real brew install test
+      - name: Build local tarball + a real local tap (brew rejects bare formula files)
         run: |
           VER="$(cat VERSION)"
           git archive --prefix="ssh_shorty-${VER}/" HEAD | gzip > "/tmp/ssh_shorty-${VER}.tar.gz"
           SHA=$(shasum -a 256 "/tmp/ssh_shorty-${VER}.tar.gz" | awk '{print $1}')
-          mkdir -p /tmp/homebrew-test/Formula
+
+          brew tap-new local/test
+          TAP_DIR="$(brew --repository)/Library/Taps/local/homebrew-test"
           sed \
             -e "s|url \".*\"|url \"file:///tmp/ssh_shorty-${VER}.tar.gz\"|" \
             -e "s|sha256 \".*\"|sha256 \"${SHA}\"|" \
             -e "s|version \".*\"|version \"${VER}\"|" \
-            Formula/s.rb > /tmp/homebrew-test/Formula/s.rb
+            Formula/s.rb > "${TAP_DIR}/Formula/s.rb"
           echo "--- formula used ---"
-          cat /tmp/homebrew-test/Formula/s.rb
+          cat "${TAP_DIR}/Formula/s.rb"
 
-      - name: brew install s (from local tarball, exercises depends_on bash + inreplace)
+      - name: brew install s (from local tap, exercises depends_on bash + inreplace)
         run: |
-          brew install --formula /tmp/homebrew-test/Formula/s.rb --verbose
+          brew install --verbose local/test/s
 
       - name: Verify brew-installed s
         run: |
