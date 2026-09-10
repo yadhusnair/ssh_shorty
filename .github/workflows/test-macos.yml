@@ -58,23 +58,16 @@ jobs:
           LogLevel ERROR
           EOF
 
+          # citest2 (below) uses 127.0.0.2 to dodge s --add's duplicate-IP guard
+          # (which only compares host, not port). macOS routes all of 127.0.0.0/8
+          # to lo0 but doesn't pre-assign every alias the way Linux effectively
+          # does — and sshd only binds at its own startup, so the alias has to
+          # exist BEFORE sshd starts, not be added after.
+          sudo ifconfig lo0 alias 127.0.0.2 up
           "$(brew --prefix openssh)/sbin/sshd" -f /tmp/sshd_test/sshd_config -E /tmp/sshd_test/sshd.log
           sleep 1
           nc -z 127.0.0.1 2222 && echo "sshd is up on 127.0.0.1:2222" || { echo "sshd failed to start"; cat /tmp/sshd_test/sshd.log; exit 1; }
-
-          # 127.0.0.2 needs to actually be reachable too (citest2 uses it to dodge
-          # s --add's duplicate-IP guard, which only compares host, not port) —
-          # macOS routes all of 127.0.0.0/8 to lo0 but doesn't always assign the
-          # alias itself, unlike Linux, so bring it up explicitly if needed.
-          if ! nc -z 127.0.0.2 2222; then
-            echo "127.0.0.2:2222 not reachable yet — bringing up the loopback alias"
-            sudo ifconfig lo0 alias 127.0.0.2 up
-            sleep 1
-            nc -z 127.0.0.2 2222 && echo "sshd is up on 127.0.0.2:2222" \
-              || { echo "sshd still unreachable on 127.0.0.2"; cat /tmp/sshd_test/sshd.log; exit 1; }
-          else
-            echo "sshd is up on 127.0.0.2:2222"
-          fi
+          nc -z 127.0.0.2 2222 && echo "sshd is up on 127.0.0.2:2222" || { echo "sshd failed to start on 127.0.0.2"; cat /tmp/sshd_test/sshd.log; exit 1; }
 
       - name: Register the local sshd as two devices (real s --add, not hand-edited machines.txt)
         run: |
