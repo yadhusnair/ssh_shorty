@@ -65,7 +65,7 @@ roottext=white,black
 emptyscale=white,black
 fullscale=white,black
 disentry=white,black
-compactbutton=black,white
+compactbutton=white,black
 actsellistbox=black,white
 sellistbox=white,black
 '
