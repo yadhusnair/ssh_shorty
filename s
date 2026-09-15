@@ -3103,89 +3103,130 @@ case "$1" in
                     fi
                     exit 1
                 fi
-                # Anything else (unreachable, timed out, refused, no route,
-                # etc.) means the real ssh below — same target, but with no
-                # ConnectTimeout — would hit the identical problem and hang
-                # instead of failing fast. Fail here rather than guessing at
-                # every possible connection-error string ssh might print.
-                if _anim_enabled; then
-                    _ora_fail "Could not connect to ${NICK} (${TARGET})."
-                else
-                    printf "${RED}Could not connect to %s (%s).${RESET}\n" "$NICK" "$TARGET"
-                fi
-                rm -f "$_pc_err"
 
-                # Known alternate paths (alt=) to this device — e.g. LAN + VPN +
-                # WireGuard addresses for the same box. Tried automatically, in
-                # order, no prompt (these are deliberately configured, not a
-                # guess) before falling back to the MAC-based guess below.
-                _af_winner=""
-                _af_line=$(awk -v n="$NICK" '$1==n{print;exit}' "$MAPFILE" 2>/dev/null)
-                for _af_field in $_af_line; do
-                    [[ "$_af_field" == alt=* ]] || continue
-                    _af_cand="${_af_field#alt=}"
-                    if ssh -o BatchMode=yes -o ConnectTimeout=5 \
-                            "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" "$_af_cand" true \
-                            2>/dev/null; then
-                        _af_winner="$_af_cand"
-                        break
+                # Host key changed (not "unknown" — StrictHostKeyChecking=accept-new
+                # already silently trusts a genuinely new host; this is SSH actively
+                # refusing because the key on file doesn't match what the host is
+                # presenting now). Never auto-purge this — it's exactly the signal a
+                # real MITM would trigger — but on a fleet device it's usually just a
+                # reimage/reflash, so offer an explicit, opt-in fix instead of making
+                # the user drop into raw ssh to even see why it failed.
+                if grep -qi "REMOTE HOST IDENTIFICATION HAS CHANGED" "$_pc_err" 2>/dev/null; then
+                    _hk_host="${TARGET#*@}"
+                    if _anim_enabled; then
+                        _ora_fail "Host key for '${NICK}' (${_hk_host}) has changed."
+                    else
+                        printf "${RED}Host key for '%s' (%s) has changed.${RESET}\n" "$NICK" "$_hk_host"
                     fi
-                done
+                    printf "${YELLOW}This usually means the device was reimaged/reflashed — but it's also${RESET}\n"
+                    printf "${YELLOW}exactly what a man-in-the-middle attack looks like. Only proceed if you${RESET}\n"
+                    printf "${YELLOW}expect this device to have changed.${RESET}\n"
+                    rm -f "$_pc_err"
+                    if [[ -t 0 ]]; then
+                        printf "Remove the old key and retry? [y/N] "
+                        read -r _hk_resp
+                        if [[ "${_hk_resp,,}" == "y" ]]; then
+                            ssh-keygen -f "$HOME/.ssh/known_hosts" -R "$_hk_host" &>/dev/null
+                            _pc_status=0
+                            ssh -o BatchMode=yes -o ConnectTimeout=5 \
+                                    "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" "$TARGET" true \
+                                    2>/dev/null || _pc_status=1
+                            if (( _pc_status != 0 )); then
+                                printf "${RED}Still can't connect to %s after removing the old key.${RESET}\n" "$_hk_host"
+                                exit 1
+                            fi
+                            printf "${GREEN}Old key removed — reconnecting.${RESET}\n"
+                        else
+                            exit 1
+                        fi
+                    else
+                        exit 1
+                    fi
+                else
+                    # Anything else (unreachable, timed out, refused, no route,
+                    # etc.) means the real ssh below — same target, but with no
+                    # ConnectTimeout — would hit the identical problem and hang
+                    # instead of failing fast. Fail here rather than guessing at
+                    # every possible connection-error string ssh might print.
+                    if _anim_enabled; then
+                        _ora_fail "Could not connect to ${NICK} (${TARGET})."
+                    else
+                        printf "${RED}Could not connect to %s (%s).${RESET}\n" "$NICK" "$TARGET"
+                    fi
+                    rm -f "$_pc_err"
 
-                if [[ -n "$_af_winner" ]]; then
-                    printf "${GREEN}Connected via alt address.${RESET} Promoting '%s' → %s\n" \
-                        "$NICK" "$_af_winner"
-                    _af_old_primary="$_raw_target"
-                    TARGET="$_af_winner"
-                    _inplace_edit awk -v n="$NICK" -v newp="$_af_winner" -v oldp="$_af_old_primary" '
-                        $1==n {
-                            $2=newp
-                            for(i=3;i<=NF;i++) if ($i=="alt="newp) $i=""
-                            $0=$0
-                            gsub(/  +/," ")
-                            sub(/[[:space:]]+$/,"")
-                            print $0 " alt=" oldp
-                            next
+                    # Known alternate paths (alt=) to this device — e.g. LAN + VPN +
+                    # WireGuard addresses for the same box. Tried automatically, in
+                    # order, no prompt (these are deliberately configured, not a
+                    # guess) before falling back to the MAC-based guess below.
+                    _af_winner=""
+                    _af_line=$(awk -v n="$NICK" '$1==n{print;exit}' "$MAPFILE" 2>/dev/null)
+                    for _af_field in $_af_line; do
+                        [[ "$_af_field" == alt=* ]] || continue
+                        _af_cand="${_af_field#alt=}"
+                        if ssh -o BatchMode=yes -o ConnectTimeout=5 \
+                                "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" "$_af_cand" true \
+                                2>/dev/null; then
+                            _af_winner="$_af_cand"
+                            break
+                        fi
+                    done
+
+                    if [[ -n "$_af_winner" ]]; then
+                        printf "${GREEN}Connected via alt address.${RESET} Promoting '%s' → %s\n" \
+                            "$NICK" "$_af_winner"
+                        _af_old_primary="$_raw_target"
+                        TARGET="$_af_winner"
+                        _inplace_edit awk -v n="$NICK" -v newp="$_af_winner" -v oldp="$_af_old_primary" '
+                            $1==n {
+                                $2=newp
+                                for(i=3;i<=NF;i++) if ($i=="alt="newp) $i=""
+                                $0=$0
+                                gsub(/  +/," ")
+                                sub(/[[:space:]]+$/,"")
+                                print $0 " alt=" oldp
+                                next
+                            }
+                            { print }
+                        ' "$MAPFILE"
+                        _sync_push
+                    else
+                        # If this device's MAC is on record, offer an ARP-based retry —
+                        # covers the common case of its IP having changed since machines.txt
+                        # was last updated. Only meaningful if that MAC is actually in this
+                        # machine's local ARP cache right now (no active probing).
+                        _cf_mac=""
+                        _cf_line=$(awk -v n="$NICK" '$1==n{print;exit}' "$MAPFILE" 2>/dev/null)
+                        for _cf_field in $_cf_line; do [[ "$_cf_field" == mac=* ]] && _cf_mac="${_cf_field#mac=}"; done
+                        _cf_new_ip=""
+                        [[ -n "$_cf_mac" ]] && _cf_new_ip=$(_arp_ip_for_mac "$_cf_mac")
+                        _cf_cur_ip="${TARGET#*@}"
+
+                        if [[ -z "$_cf_new_ip" || "$_cf_new_ip" == "$_cf_cur_ip" || ! -t 0 ]]; then
+                            exit 1
+                        fi
+
+                        printf "Found '%s' at a different IP via its known MAC: %s. Try it? [Y/n] " \
+                            "$NICK" "$_cf_new_ip"
+                        read -r _cf_resp
+                        [[ "${_cf_resp,,}" == "n" ]] && exit 1
+
+                        _cf_user=""; [[ "$TARGET" == *@* ]] && _cf_user="${TARGET%%@*}"
+                        _cf_new_target="${_cf_user:+${_cf_user}@}${_cf_new_ip}"
+                        ssh -o BatchMode=yes -o ConnectTimeout=5 \
+                                "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" "$_cf_new_target" true \
+                                2>/dev/null || {
+                            printf "${RED}Still unreachable at %s.${RESET}\n" "$_cf_new_target"
+                            exit 1
                         }
-                        { print }
-                    ' "$MAPFILE"
-                    _sync_push
-                else
-                    # If this device's MAC is on record, offer an ARP-based retry —
-                    # covers the common case of its IP having changed since machines.txt
-                    # was last updated. Only meaningful if that MAC is actually in this
-                    # machine's local ARP cache right now (no active probing).
-                    _cf_mac=""
-                    _cf_line=$(awk -v n="$NICK" '$1==n{print;exit}' "$MAPFILE" 2>/dev/null)
-                    for _cf_field in $_cf_line; do [[ "$_cf_field" == mac=* ]] && _cf_mac="${_cf_field#mac=}"; done
-                    _cf_new_ip=""
-                    [[ -n "$_cf_mac" ]] && _cf_new_ip=$(_arp_ip_for_mac "$_cf_mac")
-                    _cf_cur_ip="${TARGET#*@}"
 
-                    if [[ -z "$_cf_new_ip" || "$_cf_new_ip" == "$_cf_cur_ip" || ! -t 0 ]]; then
-                        exit 1
+                        TARGET="$_cf_new_target"
+                        printf "${GREEN}Connected via MAC lookup.${RESET} Updating stored IP for '%s' → %s\n" \
+                            "$NICK" "$_cf_new_ip"
+                        _inplace_edit awk -v n="$NICK" -v u="$_cf_user" -v h="$_cf_new_ip" \
+                            '$1==n { $2 = (u=="" ? h : u"@"h) } { print }' "$MAPFILE"
+                        _sync_push
                     fi
-
-                    printf "Found '%s' at a different IP via its known MAC: %s. Try it? [Y/n] " \
-                        "$NICK" "$_cf_new_ip"
-                    read -r _cf_resp
-                    [[ "${_cf_resp,,}" == "n" ]] && exit 1
-
-                    _cf_user=""; [[ "$TARGET" == *@* ]] && _cf_user="${TARGET%%@*}"
-                    _cf_new_target="${_cf_user:+${_cf_user}@}${_cf_new_ip}"
-                    ssh -o BatchMode=yes -o ConnectTimeout=5 \
-                            "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" "$_cf_new_target" true \
-                            2>/dev/null || {
-                        printf "${RED}Still unreachable at %s.${RESET}\n" "$_cf_new_target"
-                        exit 1
-                    }
-
-                    TARGET="$_cf_new_target"
-                    printf "${GREEN}Connected via MAC lookup.${RESET} Updating stored IP for '%s' → %s\n" \
-                        "$NICK" "$_cf_new_ip"
-                    _inplace_edit awk -v n="$NICK" -v u="$_cf_user" -v h="$_cf_new_ip" \
-                        '$1==n { $2 = (u=="" ? h : u"@"h) } { print }' "$MAPFILE"
-                    _sync_push
                 fi
             else
                 rm -f "$_pc_err"
