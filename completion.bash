@@ -86,8 +86,8 @@ _ssh_shorty_complete() {
         else
             mkdir -p "$cache_dir"
             mapfile -t remote_paths < <(
-                ssh -o BatchMode=yes -o ConnectTimeout=3 "$target" \
-                    "bash -c 'for p in \$(compgen -f -- \"$partial\"); do [ -d \"\$p\" ] && echo \"\$p/\" || echo \"\$p\"; done'" \
+                ssh -o BatchMode=yes -o ConnectTimeout=3 -o StrictHostKeyChecking=accept-new "$target" \
+                    "bash -c 'for p in \$(compgen -f -- $partial); do [ -d \"\$p\" ] && echo \"\$p/\" || echo \"\$p\"; done'" \
                     2>/dev/null
             )
             printf '%s\n' "${remote_paths[@]}" > "$cache_file"

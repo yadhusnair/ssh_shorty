@@ -94,8 +94,8 @@ _ssh_shorty() {
       paths=(${(f)"$(<$cache_file)"})
     else
       mkdir -p "$cache_dir"
-      paths=(${(f)"$(ssh -o BatchMode=yes -o ConnectTimeout=3 "$target" \
-        "bash -c 'for p in \$(compgen -f -- \"$partial\"); do [ -d \"\$p\" ] && echo \"\$p/\" || echo \"\$p\"; done'" \
+      paths=(${(f)"$(ssh -o BatchMode=yes -o ConnectTimeout=3 -o StrictHostKeyChecking=accept-new "$target" \
+        "bash -c 'for p in \$(compgen -f -- $partial); do [ -d \"\$p\" ] && echo \"\$p/\" || echo \"\$p\"; done'" \
         2>/dev/null)"})
       print -l -- "${paths[@]}" > "$cache_file"
     fi
