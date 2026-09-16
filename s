@@ -974,7 +974,7 @@ _wt_load_device() {
 }
 
 _wt_save_device() {
-    local nick="$1" target="$2" port="$3" key="$4" mac="$5" alts="$6" tags="$7" preserve="$8" is_new="${9:-false}"
+    local old_nick="$1" nick="$2" target="$3" port="$4" key="$5" mac="$6" alts="$7" tags="$8" preserve="$9" is_new="${10:-false}"
     local line="$nick $target" t
     [[ -n "$port" ]] && line="$line port=$port"
     [[ -n "$key" ]]  && line="$line key=$key"
@@ -985,13 +985,22 @@ _wt_save_device() {
     if [[ "$is_new" == true ]]; then
         printf '%s\n' "$line" >> "$MAPFILE"
     else
-        _inplace_edit awk -v n="$nick" -v newline="$line" '$1==n{print newline;next}{print}' "$MAPFILE"
+        _inplace_edit awk -v n="$old_nick" -v newline="$line" '$1==n{print newline;next}{print}' "$MAPFILE"
     fi
 }
 
 _wt_edit_device() {
-    local nick="$1" target port key mac alts tags
-    _wt_load_device "$nick"
+    local old_nick="$1" nick target port key mac alts tags
+    _wt_load_device "$old_nick"
+    nick=$(whiptail --title "Edit: $old_nick" --inputbox "Nickname:" 10 60 "$old_nick" 3>&1 1>&2 2>&3) || return 1
+    if [[ -z "$nick" ]]; then
+        whiptail --msgbox "Nickname can't be empty — no changes made." 8 50
+        return 1
+    fi
+    if [[ "$nick" != "$old_nick" ]] && _nick_exists "$nick"; then
+        whiptail --msgbox "Nickname '$nick' already exists — no changes made." 8 50
+        return 1
+    fi
     target=$(whiptail --title "Edit: $nick" --inputbox "Target (user@host):" 10 60 "$WT_TARGET" 3>&1 1>&2 2>&3) || return 1
     port=$(whiptail --title "Edit: $nick" --inputbox "Port (blank = default 22):" 10 60 "$WT_PORT" 3>&1 1>&2 2>&3) || return 1
     key=$(whiptail --title "Edit: $nick" --inputbox "SSH key path (blank = default):" 10 60 "$WT_KEY" 3>&1 1>&2 2>&3) || return 1
@@ -1006,7 +1015,7 @@ _wt_edit_device() {
         whiptail --msgbox "That doesn't look like a valid MAC address (expected aa:bb:cc:dd:ee:ff) — no changes made." 9 70
         return 1
     fi
-    _wt_save_device "$nick" "$target" "$port" "$key" "$mac" "$alts" "$tags" "$WT_PRESERVE"
+    _wt_save_device "$old_nick" "$nick" "$target" "$port" "$key" "$mac" "$alts" "$tags" "$WT_PRESERVE"
 }
 
 _wt_add_device() {
@@ -1031,7 +1040,7 @@ _wt_add_device() {
     fi
     alts=$(whiptail --title "Add: $nick" --inputbox "Alt addresses — other ways to reach it (space-separated user@host, e.g. VPN/WireGuard IPs, blank = none):" 11 76 "" 3>&1 1>&2 2>&3) || return 1
     tags=$(whiptail --title "Add: $nick" --inputbox "Tags, space-separated, no # (e.g. fm sherpa):" 10 60 "" 3>&1 1>&2 2>&3) || return 1
-    _wt_save_device "$nick" "$target" "$port" "$key" "$mac" "$alts" "$tags" "" true
+    _wt_save_device "$nick" "$nick" "$target" "$port" "$key" "$mac" "$alts" "$tags" "" true
 }
 
 _wt_delete_device() {
