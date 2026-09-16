@@ -94,8 +94,14 @@ _ssh_shorty() {
       paths=(${(f)"$(<$cache_file)"})
     else
       mkdir -p "$cache_dir"
+      # compgen's own matching against $partial already handles a leading ~
+      # fine and returns candidates in ~-relative form (needed so zsh's
+      # prefix matching against what was actually typed still works) — but
+      # `[ -d ]` on a *quoted* variable never tilde-expands, so directories
+      # never got their trailing "/" without a separate, explicit expansion
+      # just for the existence check.
       paths=(${(f)"$(ssh -o BatchMode=yes -o ConnectTimeout=3 -o StrictHostKeyChecking=accept-new "$target" \
-        "bash -c 'for p in \$(compgen -f -- $partial); do [ -d \"\$p\" ] && echo \"\$p/\" || echo \"\$p\"; done'" \
+        "bash -c 'for p in \$(compgen -f -- \"$partial\"); do e=\"\${p/#~/\$HOME}\"; [ -d \"\$e\" ] && echo \"\$p/\" || echo \"\$p\"; done'" \
         2>/dev/null)"})
       print -l -- "${paths[@]}" > "$cache_file"
     fi
