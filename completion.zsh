@@ -119,7 +119,10 @@ _ssh_shorty() {
     # Move 'nick:' into IPREFIX so completions match only the path/alias part
     compset -P '*:'
 
-    if [[ "$partial" != /* && "$partial" != ~* ]]; then
+    # "~" quoted (not a bare glob char): zsh's completion system runs with
+    # EXTENDED_GLOB active, under which an unquoted ~* pattern doesn't match
+    # a literal leading tilde the way it looks like it should.
+    if [[ "$partial" != /* && "$partial" != "~"* ]]; then
       local -a nick_aliases
       nick_aliases=(${(f)"$(_aliases_for_nick "$nick")"})
       if (( ${#nick_aliases} > 0 )); then
