@@ -455,6 +455,19 @@ usage() {
 
 _sync_remote_dir() { printf '%s' "${SYNC_REMOTE_PATH%/*}"; }
 
+# Deletes a nick's line directly on SYNC_HOST's copy of machines.txt. Must be
+# called BEFORE _sync_push whenever a nick is removed or renamed away from —
+# _sync_push's own pull-merge treats "nick missing locally, present remotely"
+# as a peer's addition to preserve, which otherwise silently resurrects
+# exactly the device that was just deleted/renamed, both locally and remote.
+_sync_remove_remote_nick() {
+    local nick="$1"
+    [[ -z "$SYNC_HOST" || -z "$nick" ]] && return 0
+    ssh -q -o BatchMode=yes -o ConnectTimeout=5 "$SYNC_HOST" \
+        "awk -v n='$nick' '\$1!=n' ~/${SYNC_REMOTE_PATH} > ~/${SYNC_REMOTE_PATH}.tmp 2>/dev/null && mv ~/${SYNC_REMOTE_PATH}.tmp ~/${SYNC_REMOTE_PATH}" \
+        2>/dev/null
+}
+
 _sync_push() {
     [[ -z "$SYNC_HOST" ]] && return 0
     local rdir; rdir=$(_sync_remote_dir)
@@ -1016,6 +1029,10 @@ _wt_edit_device() {
         return 1
     fi
     _wt_save_device "$old_nick" "$nick" "$target" "$port" "$key" "$mac" "$alts" "$tags" "$WT_PRESERVE"
+    # Signals a rename to the caller so it can also purge the old nick from
+    # SYNC_HOST — otherwise _sync_push's pull-merge would resurrect it.
+    WT_RENAMED_FROM=""
+    [[ "$nick" != "$old_nick" ]] && WT_RENAMED_FROM="$old_nick"
 }
 
 _wt_add_device() {
@@ -1083,6 +1100,7 @@ _wt_pick_device() {
 _wt_edit_machines() {
     _require_mapfile
     local dirty=0
+    local -a removed_nicks=()
     while true; do
         local action
         action=$(whiptail --title "Fleet" --menu "Choose an action (Esc to exit)" 14 60 3 \
@@ -1093,20 +1111,30 @@ _wt_edit_machines() {
         case "$action" in
             edit)
                 local nick; nick=$(_wt_pick_device "Select a device to edit") || continue
-                _wt_edit_device "$nick" && dirty=1
+                if _wt_edit_device "$nick"; then
+                    dirty=1
+                    [[ -n "$WT_RENAMED_FROM" ]] && removed_nicks+=("$WT_RENAMED_FROM")
+                fi
                 ;;
             add)
                 _wt_add_device && dirty=1
                 ;;
             delete)
                 local nick; nick=$(_wt_pick_device "Select a device to delete") || continue
-                _wt_delete_device "$nick" && dirty=1
+                if _wt_delete_device "$nick"; then
+                    dirty=1
+                    removed_nicks+=("$nick")
+                fi
                 ;;
         esac
     done
     clear 2>/dev/null
     if (( dirty )); then
         _dedup_mapfile "$MAPFILE"
+        local rn
+        for rn in "${removed_nicks[@]}"; do
+            _sync_remove_remote_nick "$rn"
+        done
         printf "${GREEN}Fleet updated.${RESET}\n"
         _sync_push
     else
@@ -2355,6 +2383,7 @@ case "$1" in
             printf "Nickname '%s' already exists.\n" "$3"; exit 1; }
         _inplace_edit awk -v old="$2" -v new="$3" '$1==old{$1=new}{print}' "$MAPFILE"
         printf "Renamed: %s → %s\n" "$2" "$3"
+        _sync_remove_remote_nick "$2"
         _sync_push
         ;;
 
@@ -2370,6 +2399,7 @@ case "$1" in
         fi
         _inplace_edit awk -v n="$2" '$1 != n' "$MAPFILE"
         printf "Removed: %s\n" "$2"
+        _sync_remove_remote_nick "$2"
         _sync_push
         ;;
 
