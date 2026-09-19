@@ -131,7 +131,10 @@ _ssh_shorty() {
         "docker ps -a --format '{{.Names}}'" 2>/dev/null)"})
       print -l -- "${names[@]}" > "$cache_file"
     fi
-    compadd -S '' -- "${names[@]}"
+    # Auto-append ':' — container[:dest-path] mirrors the nick:path idiom
+    # used elsewhere, so picking a container continues straight into its
+    # in-container path completion without having to type the colon.
+    compadd -S ':' -- "${names[@]}"
   }
 
   # Paths inside a specific container, cached 30s per (nick, container, partial).
@@ -161,6 +164,16 @@ _ssh_shorty() {
       print -l -- "${paths[@]}" > "$cache_file"
     fi
     compadd -f -Q -S '' -- "${paths[@]}"
+  }
+
+  # For container:<TAB> (the 4th --docker-cp arg): strip 'container:' via
+  # compset so in-container path candidates match just the partial.
+  _docker_container_colon_complete() {
+    local nick="$1" token="$2"
+    local container="${token%%:*}"
+    local partial="${token#*:}"
+    compset -P '*:'
+    _docker_container_paths_for "$nick" "$container" "$partial"
   }
 
   # For nick:<TAB>: strip 'nick:' from PREFIX via compset so bare alias/path
@@ -333,9 +346,11 @@ _ssh_shorty() {
         elif (( CURRENT == 4 )); then
           _describe 'machine' machines
         elif (( CURRENT == 5 )); then
-          _docker_containers_for "${words[4]}"
-        elif (( CURRENT == 6 )); then
-          _docker_container_paths_for "${words[4]}" "${words[5]}" "$PREFIX"
+          if [[ "$PREFIX" == *:* ]]; then
+            _docker_container_colon_complete "${words[4]}" "$PREFIX"
+          else
+            _docker_containers_for "${words[4]}"
+          fi
         fi
         ;;
       --tag|--untag)

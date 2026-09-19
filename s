@@ -432,7 +432,7 @@ usage() {
     printf "  s -d <alias> <nick> [local_dest]            download via path alias\n"
     printf "  s --view <nick> <path>                      stream remote file to local viewer\n"
     printf "  s -u <local-path> <nick>[:<alias|path>]    upload file/dir (alias resolved)\n"
-    printf "  s --docker-cp <local-path> <nick> <container> [dest]   copy file into a container on a device\n"
+    printf "  s --docker-cp <local-path> <nick> <container>[:<dest>]   copy file into a container on a device\n"
     printf "  s --rename <nickname> <new-name>            rename a device\n"
     printf "  s --remove <nickname>                       remove a device\n"
     printf "  s --tag <nickname> <tag>                    add a tag to a device (# auto-added)\n"
@@ -2261,8 +2261,14 @@ case "$1" in
 
     --docker-cp)
         [[ -z "$2" || -z "$3" || -z "$4" ]] && {
-            printf "Usage: s --docker-cp <local-path> <nickname> <container> [dest-path-in-container]\n"; exit 1; }
-        LOCAL_PATH="$2"; NICK="$3"; CONTAINER="$4"; DC_DEST="${5:-/tmp/$(basename "$LOCAL_PATH")}"
+            printf "Usage: s --docker-cp <local-path> <nickname> <container>[:<dest-path-in-container>]\n"; exit 1; }
+        LOCAL_PATH="$2"; NICK="$3"
+        if [[ "$4" == *:* ]]; then
+            CONTAINER="${4%%:*}"; DC_DEST="${4#*:}"
+            [[ -z "$DC_DEST" ]] && DC_DEST="/tmp/$(basename "$LOCAL_PATH")"
+        else
+            CONTAINER="$4"; DC_DEST="/tmp/$(basename "$LOCAL_PATH")"
+        fi
         [[ -e "$LOCAL_PATH" ]] || { printf "Local path not found: %s\n" "$LOCAL_PATH"; exit 1; }
         _get_single_target "$NICK" || exit 1
         NICK="$RESOLVED_NICK"; TARGET="$RESOLVED_TARGET"

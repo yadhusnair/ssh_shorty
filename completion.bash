@@ -325,9 +325,14 @@ _ssh_shorty_complete() {
                 elif [[ "$cword" -eq 3 ]]; then
                     COMPREPLY=( $(compgen -W "${machines[*]}" -- "$cur") )
                 elif [[ "$cword" -eq 4 ]]; then
-                    _complete_docker_containers "${COMP_WORDS[3]}" "$cur"
-                elif [[ "$cword" -eq 5 ]]; then
-                    _complete_docker_container_path "${COMP_WORDS[3]}" "${COMP_WORDS[4]}" "$cur"
+                    if [[ -n "$nick_for_path" ]]; then
+                        # nick_for_path here is actually the container name —
+                        # we just typed "container:" and are completing dest.
+                        _complete_docker_container_path "${COMP_WORDS[3]}" "$nick_for_path" "$cur"
+                    else
+                        _complete_docker_containers "${COMP_WORDS[3]}" "$cur"
+                        compopt -o nospace
+                    fi
                 fi
                 ;;
             --tag)
