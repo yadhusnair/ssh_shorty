@@ -25,6 +25,7 @@ _ssh_shorty() {
     '--download:download via path alias'
     '-u:upload file/dir to device'
     '--upload:upload file/dir to device'
+    '--docker-cp:copy a file into a container on a device'
     '--list:list all devices'
     '--add:add a new device'
     '--set:update a device IP'
@@ -271,6 +272,13 @@ _ssh_shorty() {
           else
             compadd -S '' -- "${machines[@]}"
           fi
+        fi
+        ;;
+      --docker-cp)
+        if (( CURRENT == 3 )); then
+          _files
+        elif (( CURRENT == 4 )); then
+          _describe 'machine' machines
         fi
         ;;
       --tag|--untag)

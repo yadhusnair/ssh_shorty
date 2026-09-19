@@ -14,7 +14,7 @@ _ssh_shorty_complete() {
         [[ "${COMP_WORDS[i]}" == ":" ]] && (( cword -= 2 ))
     done
 
-    local subcommands="--list --add --set --set-mac --add-alt --remove-alt --rename --remove --tag --untag --sync --ping --oneshot --poll --edit --paths --help --update --fav --status --watch --run --run-script --sysinfo --tail --tunnel --close --register --export-ssh-config --keydeploy --last --import -u --upload -d --download --view -m"
+    local subcommands="--list --add --set --set-mac --add-alt --remove-alt --rename --remove --tag --untag --sync --ping --oneshot --poll --edit --paths --help --update --fav --status --watch --run --run-script --sysinfo --tail --tunnel --close --register --export-ssh-config --keydeploy --last --import -u --upload --docker-cp -d --download --view -m"
     local mapfile_path="$HOME/.config/ssh_shorty/machines.txt"
     local paths_file="$HOME/.config/ssh_shorty/machine-paths.txt"
     local machines=()
@@ -261,6 +261,14 @@ _ssh_shorty_complete() {
                         COMPREPLY=( $(compgen -W "${machines[*]}" -- "$cur") )
                         compopt -o nospace
                     fi
+                fi
+                ;;
+            --docker-cp)
+                if [[ "$cword" -eq 2 ]]; then
+                    COMPREPLY=( $(compgen -f -- "$cur") )
+                    compopt -o nospace
+                elif [[ "$cword" -eq 3 ]]; then
+                    COMPREPLY=( $(compgen -W "${machines[*]}" -- "$cur") )
                 fi
                 ;;
             --tag)

@@ -432,6 +432,7 @@ usage() {
     printf "  s -d <alias> <nick> [local_dest]            download via path alias\n"
     printf "  s --view <nick> <path>                      stream remote file to local viewer\n"
     printf "  s -u <local-path> <nick>[:<alias|path>]    upload file/dir (alias resolved)\n"
+    printf "  s --docker-cp <local-path> <nick> <container> [dest]   copy file into a container on a device\n"
     printf "  s --rename <nickname> <new-name>            rename a device\n"
     printf "  s --remove <nickname>                       remove a device\n"
     printf "  s --tag <nickname> <tag>                    add a tag to a device (# auto-added)\n"
@@ -2256,6 +2257,34 @@ case "$1" in
         ssh_cmd="ssh"
         for o in "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}"; do ssh_cmd+=" $o"; done
         _snap_transfer -e "$ssh_cmd" "$LOCAL_PATH" "$TARGET:$REMOTE_PATH"
+        ;;
+
+    --docker-cp)
+        [[ -z "$2" || -z "$3" || -z "$4" ]] && {
+            printf "Usage: s --docker-cp <local-path> <nickname> <container> [dest-path-in-container]\n"; exit 1; }
+        LOCAL_PATH="$2"; NICK="$3"; CONTAINER="$4"; DC_DEST="${5:-/tmp/$(basename "$LOCAL_PATH")}"
+        [[ -e "$LOCAL_PATH" ]] || { printf "Local path not found: %s\n" "$LOCAL_PATH"; exit 1; }
+        _get_single_target "$NICK" || exit 1
+        NICK="$RESOLVED_NICK"; TARGET="$RESOLVED_TARGET"
+        _load_device_opts "$NICK"
+        TARGET=$(_apply_mac_resolution "$NICK" "$TARGET")
+
+        DC_TMP="/tmp/.s_dockercp_$$_$(basename "$LOCAL_PATH")"
+        ssh_cmd="ssh"
+        for o in "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}"; do ssh_cmd+=" $o"; done
+        printf "Uploading %s → %s (staging)...\n" "$LOCAL_PATH" "$NICK"
+        _snap_transfer -e "$ssh_cmd" "$LOCAL_PATH" "$TARGET:$DC_TMP" || {
+            printf "${RED}Upload failed.${RESET}\n"; exit 1; }
+
+        printf "Copying into container '%s:%s'...\n" "$CONTAINER" "$DC_DEST"
+        if ssh "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" "$TARGET" \
+                "docker cp '$DC_TMP' '$CONTAINER':'$DC_DEST' && rm -rf '$DC_TMP'"; then
+            printf "${GREEN}Copied into %s on '%s': %s${RESET}\n" "$CONTAINER" "$NICK" "$DC_DEST"
+        else
+            printf "${RED}docker cp failed${RESET} (bad container name, or docker not accessible on '%s').\n" "$NICK"
+            ssh "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" "$TARGET" "rm -rf '$DC_TMP'" 2>/dev/null
+            exit 1
+        fi
         ;;
 
     --add|-a)
