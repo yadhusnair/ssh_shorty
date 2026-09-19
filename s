@@ -1033,6 +1033,7 @@ _wt_edit_device() {
     # SYNC_HOST — otherwise _sync_push's pull-merge would resurrect it.
     WT_RENAMED_FROM=""
     [[ "$nick" != "$old_nick" ]] && WT_RENAMED_FROM="$old_nick"
+    return 0
 }
 
 _wt_add_device() {
