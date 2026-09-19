@@ -1390,7 +1390,7 @@ _register_key() {
     # Auto-detect if no key provided
     if [[ -z "$key" ]]; then
         local _found=()
-        for _f in "$HOME/.ssh/"id_*.pub "$HOME/.ssh/"*.pub; do
+        for _f in "$HOME/.ssh/"*.pub; do
             [[ -f "$_f" ]] && _found+=("$_f")
         done
         if [[ ${#_found[@]} -eq 1 ]]; then
