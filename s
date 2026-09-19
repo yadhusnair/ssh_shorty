@@ -2320,6 +2320,17 @@ case "$1" in
         _load_device_opts "$NICK"
         TARGET=$(_apply_mac_resolution "$NICK" "$TARGET")
 
+        # Same docker cp quirk as --docker-cp's dest: a relative path is NOT
+        # resolved against the container's WORKDIR, it just fails outright —
+        # even though `docker exec` (what tab-completion browses from)
+        # defaults its cwd to WORKDIR. Make it absolute first.
+        if [[ "$DD_SRC" != /* ]]; then
+            DD_WORKDIR=$(ssh "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" "$TARGET" \
+                "docker inspect '$CONTAINER' --format '{{.Config.WorkingDir}}'" 2>/dev/null)
+            [[ -z "$DD_WORKDIR" ]] && DD_WORKDIR="/"
+            DD_SRC="${DD_WORKDIR%/}/$DD_SRC"
+        fi
+
         DD_TMP="/tmp/.s_dockerdl_$$_$(basename "$DD_SRC")"
         printf "Copying out of container '%s:%s'...\n" "$CONTAINER" "$DD_SRC"
         if ! ssh "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" "$TARGET" \
