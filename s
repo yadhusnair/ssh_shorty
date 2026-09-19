@@ -2269,6 +2269,22 @@ case "$1" in
         _load_device_opts "$NICK"
         TARGET=$(_apply_mac_resolution "$NICK" "$TARGET")
 
+        # docker cp does NOT resolve a relative dest against the container's
+        # WORKDIR the way `docker exec` does for its default cwd (which is
+        # what tab-completion browses from) — it just fails with "no such
+        # directory". Make any relative dest absolute against WORKDIR so a
+        # completed path (or a hand-typed relative one) actually works.
+        if [[ "$DC_DEST" != /* ]]; then
+            DC_WORKDIR=$(ssh "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" "$TARGET" \
+                "docker inspect '$CONTAINER' --format '{{.Config.WorkingDir}}'" 2>/dev/null)
+            [[ -z "$DC_WORKDIR" ]] && DC_WORKDIR="/"
+            DC_DEST="${DC_WORKDIR%/}/$DC_DEST"
+        fi
+        # A directory-target dest (trailing /) makes docker cp name the file
+        # after the *source's* basename — which would be the mangled staging
+        # filename below, not the real one. Pin the real filename explicitly.
+        [[ "$DC_DEST" == */ ]] && DC_DEST="${DC_DEST}$(basename "$LOCAL_PATH")"
+
         DC_TMP="/tmp/.s_dockercp_$$_$(basename "$LOCAL_PATH")"
         ssh_cmd="ssh"
         for o in "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}"; do ssh_cmd+=" $o"; done
