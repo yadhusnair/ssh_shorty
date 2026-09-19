@@ -110,6 +110,59 @@ _ssh_shorty() {
     compadd -f -Q -S '' -- "${paths[@]}"
   }
 
+  # List containers (running or not) on a device via `docker ps -a`, cached 30s.
+  _docker_containers_for() {
+    local nick="$1"
+    local target
+    target=$(awk -v n="$nick" '$1 == n {print $2; exit}' "$mapfile" 2>/dev/null)
+    [[ -z "$target" ]] && return
+
+    local cache_dir="$HOME/.cache/ssh_shorty"
+    local cache_file="${cache_dir}/dockerps_${nick}"
+    local -a names
+
+    local mtime=0
+    zstat -A mtime +mtime "$cache_file" 2>/dev/null
+    if [[ -f "$cache_file" ]] && (( EPOCHSECONDS - mtime < 30 )); then
+      names=(${(f)"$(<$cache_file)"})
+    else
+      mkdir -p "$cache_dir"
+      names=(${(f)"$(ssh -o BatchMode=yes -o ConnectTimeout=3 -o StrictHostKeyChecking=accept-new "$target" \
+        "docker ps -a --format '{{.Names}}'" 2>/dev/null)"})
+      print -l -- "${names[@]}" > "$cache_file"
+    fi
+    compadd -S '' -- "${names[@]}"
+  }
+
+  # Paths inside a specific container, cached 30s per (nick, container, partial).
+  # Uses plain POSIX sh globbing (not bash's compgen) since many container
+  # images have only /bin/sh, or no shell at all — in the latter case docker
+  # exec fails and this just yields no candidates rather than erroring.
+  _docker_container_paths_for() {
+    local nick="$1" container="$2" partial="$3"
+    local target
+    target=$(awk -v n="$nick" '$1 == n {print $2; exit}' "$mapfile" 2>/dev/null)
+    [[ -z "$target" ]] && return
+
+    local cache_dir="$HOME/.cache/ssh_shorty"
+    local cache_key="dockerpath_${nick}_${container}_${partial//\//_}"
+    local cache_file="${cache_dir}/${cache_key}"
+    local -a paths
+
+    local mtime=0
+    zstat -A mtime +mtime "$cache_file" 2>/dev/null
+    if [[ -f "$cache_file" ]] && (( EPOCHSECONDS - mtime < 30 )); then
+      paths=(${(f)"$(<$cache_file)"})
+    else
+      mkdir -p "$cache_dir"
+      paths=(${(f)"$(ssh -o BatchMode=yes -o ConnectTimeout=3 -o StrictHostKeyChecking=accept-new "$target" \
+        "docker exec '$container' sh -c 'set -- \"\$1\"*; for p; do [ -e \"\$p\" ] || continue; [ -d \"\$p\" ] && printf \"%s/\n\" \"\$p\" || printf \"%s\n\" \"\$p\"; done' _ \"$partial\"" \
+        2>/dev/null)"})
+      print -l -- "${paths[@]}" > "$cache_file"
+    fi
+    compadd -f -Q -S '' -- "${paths[@]}"
+  }
+
   # For nick:<TAB>: strip 'nick:' from PREFIX via compset so bare alias/path
   # names are matched against just the partial after the colon.
   _nick_colon_complete() {
@@ -279,6 +332,10 @@ _ssh_shorty() {
           _files
         elif (( CURRENT == 4 )); then
           _describe 'machine' machines
+        elif (( CURRENT == 5 )); then
+          _docker_containers_for "${words[4]}"
+        elif (( CURRENT == 6 )); then
+          _docker_container_paths_for "${words[4]}" "${words[5]}" "$PREFIX"
         fi
         ;;
       --tag|--untag)

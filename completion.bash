@@ -97,6 +97,61 @@ _ssh_shorty_complete() {
         compopt -o nospace
     }
 
+    # List containers (running or not) on a device via `docker ps -a`, cached 30s.
+    _complete_docker_containers() {
+        local nick="$1" cur="$2"
+        local target
+        target=$(awk -v n="$nick" '$1 == n {print $2; exit}' "$mapfile_path" 2>/dev/null)
+        [[ -z "$target" ]] && return
+
+        local cache_dir="$HOME/.cache/ssh_shorty"
+        local cache_file="${cache_dir}/dockerps_${nick}"
+
+        local -a names
+        if [[ -f "$cache_file" ]] && \
+           (( $(date +%s) - $(stat -c %Y "$cache_file" 2>/dev/null || echo 0) < 30 )); then
+            mapfile -t names < "$cache_file"
+        else
+            mkdir -p "$cache_dir"
+            mapfile -t names < <(
+                ssh -o BatchMode=yes -o ConnectTimeout=3 -o StrictHostKeyChecking=accept-new "$target" \
+                    "docker ps -a --format '{{.Names}}'" 2>/dev/null
+            )
+            printf '%s\n' "${names[@]}" > "$cache_file"
+        fi
+        COMPREPLY=( $(compgen -W "${names[*]}" -- "$cur") )
+    }
+
+    # Paths inside a specific container, cached 30s per (nick, container, partial).
+    # Plain POSIX sh globbing (not bash's compgen) since many container images
+    # have only /bin/sh, or no shell at all — the latter just yields nothing.
+    _complete_docker_container_path() {
+        local nick="$1" container="$2" partial="$3"
+        local target
+        target=$(awk -v n="$nick" '$1 == n {print $2; exit}' "$mapfile_path" 2>/dev/null)
+        [[ -z "$target" ]] && return
+
+        local cache_dir="$HOME/.cache/ssh_shorty"
+        local cache_key="dockerpath_${nick}_${container}_${partial//\//_}"
+        local cache_file="${cache_dir}/${cache_key}"
+
+        local -a paths
+        if [[ -f "$cache_file" ]] && \
+           (( $(date +%s) - $(stat -c %Y "$cache_file" 2>/dev/null || echo 0) < 30 )); then
+            mapfile -t paths < "$cache_file"
+        else
+            mkdir -p "$cache_dir"
+            mapfile -t paths < <(
+                ssh -o BatchMode=yes -o ConnectTimeout=3 -o StrictHostKeyChecking=accept-new "$target" \
+                    "docker exec '$container' sh -c 'set -- \"\$1\"*; for p; do [ -e \"\$p\" ] || continue; [ -d \"\$p\" ] && printf \"%s/\n\" \"\$p\" || printf \"%s\n\" \"\$p\"; done' _ \"$partial\"" \
+                    2>/dev/null
+            )
+            printf '%s\n' "${paths[@]}" > "$cache_file"
+        fi
+        COMPREPLY=( "${paths[@]}" )
+        compopt -o nospace
+    }
+
     # For nick:<TAB>: offer aliases first (no / prefix); fall back to remote paths.
     _complete_nick_colon() {
         local nick="$1" partial="$2"
@@ -269,6 +324,10 @@ _ssh_shorty_complete() {
                     compopt -o nospace
                 elif [[ "$cword" -eq 3 ]]; then
                     COMPREPLY=( $(compgen -W "${machines[*]}" -- "$cur") )
+                elif [[ "$cword" -eq 4 ]]; then
+                    _complete_docker_containers "${COMP_WORDS[3]}" "$cur"
+                elif [[ "$cword" -eq 5 ]]; then
+                    _complete_docker_container_path "${COMP_WORDS[3]}" "${COMP_WORDS[4]}" "$cur"
                 fi
                 ;;
             --tag)
