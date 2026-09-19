@@ -433,6 +433,7 @@ usage() {
     printf "  s --view <nick> <path>                      stream remote file to local viewer\n"
     printf "  s -u <local-path> <nick>[:<alias|path>]    upload file/dir (alias resolved)\n"
     printf "  s --docker-cp <local-path> <nick> <container>[:<dest>]   copy file into a container on a device\n"
+    printf "  s --docker-download <nick> <container>:<path> [local-dest]   copy file out of a container\n"
     printf "  s --rename <nickname> <new-name>            rename a device\n"
     printf "  s --remove <nickname>                       remove a device\n"
     printf "  s --tag <nickname> <tag>                    add a tag to a device (# auto-added)\n"
@@ -2307,6 +2308,38 @@ case "$1" in
             ssh "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" "$TARGET" "rm -rf '$DC_TMP'" 2>/dev/null
             exit 1
         fi
+        ;;
+
+    --docker-download)
+        [[ -z "$2" || -z "$3" || "$3" != *:* ]] && {
+            printf "Usage: s --docker-download <nickname> <container>:<path-in-container> [local-dest]\n"; exit 1; }
+        NICK="$2"; CONTAINER="${3%%:*}"; DD_SRC="${3#*:}"; LOCAL_DEST="${4:-.}"
+        [[ -z "$DD_SRC" ]] && { printf "No path given inside the container.\n"; exit 1; }
+        _get_single_target "$NICK" || exit 1
+        NICK="$RESOLVED_NICK"; TARGET="$RESOLVED_TARGET"
+        _load_device_opts "$NICK"
+        TARGET=$(_apply_mac_resolution "$NICK" "$TARGET")
+
+        DD_TMP="/tmp/.s_dockerdl_$$_$(basename "$DD_SRC")"
+        printf "Copying out of container '%s:%s'...\n" "$CONTAINER" "$DD_SRC"
+        if ! ssh "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" "$TARGET" \
+                "docker cp '$CONTAINER':'$DD_SRC' '$DD_TMP'"; then
+            printf "${RED}docker cp failed${RESET} (bad path, container name, or docker not accessible on '%s').\n" "$NICK"
+            exit 1
+        fi
+
+        # If the local dest is a directory, the file would otherwise land
+        # under the mangled staging name (DD_TMP's basename) instead of its
+        # real one — pin the real basename explicitly, same fix as --docker-cp.
+        [[ -d "$LOCAL_DEST" ]] && LOCAL_DEST="${LOCAL_DEST%/}/$(basename "$DD_SRC")"
+
+        ssh_cmd="ssh"
+        for o in "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}"; do ssh_cmd+=" $o"; done
+        printf "Downloading → %s...\n" "$LOCAL_DEST"
+        _snap_transfer -e "$ssh_cmd" "$TARGET:$DD_TMP" "$LOCAL_DEST"
+        DD_STATUS=$?
+        ssh "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" "$TARGET" "rm -rf '$DD_TMP'" 2>/dev/null
+        exit $DD_STATUS
         ;;
 
     --add|-a)

@@ -26,6 +26,7 @@ _ssh_shorty() {
     '-u:upload file/dir to device'
     '--upload:upload file/dir to device'
     '--docker-cp:copy a file into a container on a device'
+    '--docker-download:copy a file out of a container on a device'
     '--list:list all devices'
     '--add:add a new device'
     '--set:update a device IP'
@@ -351,6 +352,19 @@ _ssh_shorty() {
           else
             _docker_containers_for "${words[4]}"
           fi
+        fi
+        ;;
+      --docker-download)
+        if (( CURRENT == 3 )); then
+          _describe 'machine' machines
+        elif (( CURRENT == 4 )); then
+          if [[ "$PREFIX" == *:* ]]; then
+            _docker_container_colon_complete "${words[3]}" "$PREFIX"
+          else
+            _docker_containers_for "${words[3]}"
+          fi
+        elif (( CURRENT == 5 )); then
+          _files
         fi
         ;;
       --tag|--untag)

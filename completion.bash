@@ -14,7 +14,7 @@ _ssh_shorty_complete() {
         [[ "${COMP_WORDS[i]}" == ":" ]] && (( cword -= 2 ))
     done
 
-    local subcommands="--list --add --set --set-mac --add-alt --remove-alt --rename --remove --tag --untag --sync --ping --oneshot --poll --edit --paths --help --update --fav --status --watch --run --run-script --sysinfo --tail --tunnel --close --register --export-ssh-config --keydeploy --last --import -u --upload --docker-cp -d --download --view -m"
+    local subcommands="--list --add --set --set-mac --add-alt --remove-alt --rename --remove --tag --untag --sync --ping --oneshot --poll --edit --paths --help --update --fav --status --watch --run --run-script --sysinfo --tail --tunnel --close --register --export-ssh-config --keydeploy --last --import -u --upload --docker-cp --docker-download -d --download --view -m"
     local mapfile_path="$HOME/.config/ssh_shorty/machines.txt"
     local paths_file="$HOME/.config/ssh_shorty/machine-paths.txt"
     local machines=()
@@ -333,6 +333,24 @@ _ssh_shorty_complete() {
                         _complete_docker_containers "${COMP_WORDS[3]}" "$cur"
                         compopt -o nospace
                     fi
+                fi
+                ;;
+            --docker-download)
+                if [[ "$cword" -eq 2 ]]; then
+                    COMPREPLY=( $(compgen -W "${machines[*]}" -- "$cur") )
+                elif [[ "$cword" -eq 3 ]]; then
+                    if [[ -n "$nick_for_path" ]]; then
+                        # nick_for_path here is actually the container name —
+                        # we just typed "container:" and are completing the
+                        # in-container source path.
+                        _complete_docker_container_path "${COMP_WORDS[2]}" "$nick_for_path" "$cur"
+                    else
+                        _complete_docker_containers "${COMP_WORDS[2]}" "$cur"
+                        compopt -o nospace
+                    fi
+                elif [[ "$cword" -eq 4 ]]; then
+                    COMPREPLY=( $(compgen -f -- "$cur") )
+                    compopt -o nospace
                 fi
                 ;;
             --tag)
