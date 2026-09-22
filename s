@@ -888,8 +888,12 @@ _dedup_mapfile() {
     local file="$1"
     [[ -f "$file" ]] || return
     local TF; TF=$(mktemp "$CONFIG_DIR/.dedup.XXXXXX")
+    # This runs on every `s` invocation (see the unconditional call further
+    # down), so sorting here — not just at --add time — keeps machines.txt
+    # alphabetical no matter which path added/renamed an entry (CLI, the
+    # whiptail editor, or a sync pull).
     awk 'NF==0||/^[[:space:]]*#/{print;next}{h=$2;sub(/^[^@]*@/,"",h);if(!seen[h]++)print}' \
-        "$file" > "$TF" && mv "$TF" "$file" || rm -f "$TF"
+        "$file" | sort -k1,1 > "$TF" && mv "$TF" "$file" || rm -f "$TF"
 }
 
 # Generic: run a command's stdout into a new file, replacing $1 atomically.
@@ -2388,6 +2392,7 @@ case "$1" in
         fi
         mkdir -p "$(dirname "$MAPFILE")"
         printf '%s %s %s\n' "$NICK" "$TARGET" "$TAGS" >> "$MAPFILE"
+        _dedup_mapfile "$MAPFILE"
         printf "Added: %s → %s %s\n" "$NICK" "$TARGET" "$TAGS"
         _sync_push
         ;;
