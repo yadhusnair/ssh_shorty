@@ -7,6 +7,7 @@ _ssh_shorty() {
   local -a machines groups tags_raw all_aliases subcommands
   local mapfile="$HOME/.config/ssh_shorty/machines.txt"
   local paths_file="$HOME/.config/ssh_shorty/machine-paths.txt"
+  local scripts_file="$HOME/.config/ssh_shorty/scripts.txt"
 
   machines=(${(f)"$(awk 'NF >= 2 && $1 !~ /^#/ {print $1}' "$mapfile" 2>/dev/null)"})
   groups=(${(f)"$(awk 'NF >= 2 && $1 !~ /^#/ {
@@ -27,6 +28,7 @@ _ssh_shorty() {
     '--upload:upload file/dir to device'
     '--docker-cp:copy a file into a container on a device'
     '--docker-download:copy a file out of a container on a device'
+    '--script:run a registered script (or add/remove/list)'
     '--list:list all devices'
     '--add:add a new device'
     '--set:update a device IP'
@@ -175,6 +177,40 @@ _ssh_shorty() {
     local partial="${token#*:}"
     compset -P '*:'
     _docker_container_paths_for "$nick" "$container" "$partial"
+  }
+
+  # All registered script names, for `s --script <TAB>`.
+  _script_names() {
+    [[ -f "$scripts_file" ]] || return
+    compadd -- ${(f)"$(awk 'NF>=3{print $1}' "$scripts_file" 2>/dev/null)"}
+  }
+
+  # Looks up a registered script's type/path into $reply[1]/$reply[2].
+  _script_lookup() {
+    local name="$1" line
+    line=$(awk -v n="$name" '$1==n{print;exit}' "$scripts_file" 2>/dev/null)
+    reply=("${${=line}[2]}" "${${=line}[3]}")
+  }
+
+  # Best-effort flag discovery: run the script with --help (timeout-guarded,
+  # stdin closed so it can't block waiting for input) and pull --flag-looking
+  # tokens out of the output. A script that doesn't handle --help safely
+  # could run its real logic instead of printing usage — this is a tradeoff
+  # of auto-detecting args from the script itself rather than registering
+  # them by hand.
+  _script_flags_for() {
+    # NOT named "path" — that's a zsh-special parameter tied to $PATH (as an
+    # array); shadowing it locally corrupts command lookup for the rest of
+    # this function's scope (grep/sed/sort/timeout all silently break).
+    local script_path="$1"
+    [[ -x "$script_path" ]] || return
+    local out
+    out=$(timeout 2 "$script_path" --help < /dev/null 2>&1)
+    [[ -z "$out" ]] && out=$(timeout 2 "$script_path" -h < /dev/null 2>&1)
+    [[ -z "$out" ]] && return
+    local -a flags
+    flags=(${(fu)"$(tr -d '[]<>(),' <<< "$out" | grep -oE -- '--[a-zA-Z][a-zA-Z0-9_-]*' | sort -u)"})
+    (( ${#flags} > 0 )) && compadd -- "${flags[@]}"
   }
 
   # For nick:<TAB>: strip 'nick:' from PREFIX via compset so bare alias/path
@@ -365,6 +401,33 @@ _ssh_shorty() {
           fi
         elif (( CURRENT == 5 )); then
           _files
+        fi
+        ;;
+      --script)
+        if (( CURRENT == 3 )); then
+          compadd -- add remove list
+          _script_names
+        elif [[ "${words[3]}" == "add" ]]; then
+          if (( CURRENT == 5 )); then
+            compadd -- remote local local+ssh
+          elif (( CURRENT == 6 )); then
+            _files
+          fi
+        elif [[ "${words[3]}" == "remove" ]]; then
+          (( CURRENT == 4 )) && _script_names
+        elif [[ "${words[3]}" != "list" ]]; then
+          local -a reply
+          _script_lookup "${words[3]}"
+          local _sc_type="${reply[1]}" _sc_path="${reply[2]}"
+          if [[ "$_sc_type" == "remote" ]]; then
+            if (( CURRENT == 4 )); then
+              _describe 'machine' machines
+            elif (( CURRENT >= 5 )); then
+              _script_flags_for "$_sc_path"
+            fi
+          else
+            (( CURRENT >= 4 )) && _script_flags_for "$_sc_path"
+          fi
         fi
         ;;
       --tag|--untag)

@@ -14,9 +14,10 @@ _ssh_shorty_complete() {
         [[ "${COMP_WORDS[i]}" == ":" ]] && (( cword -= 2 ))
     done
 
-    local subcommands="--list --add --set --set-mac --add-alt --remove-alt --rename --remove --tag --untag --sync --ping --oneshot --poll --edit --paths --help --update --fav --status --watch --run --run-script --sysinfo --tail --tunnel --close --register --export-ssh-config --keydeploy --last --import -u --upload --docker-cp --docker-download -d --download --view -m"
+    local subcommands="--list --add --set --set-mac --add-alt --remove-alt --rename --remove --tag --untag --sync --ping --oneshot --poll --edit --paths --help --update --fav --status --watch --run --run-script --script --sysinfo --tail --tunnel --close --register --export-ssh-config --keydeploy --last --import -u --upload --docker-cp --docker-download -d --download --view -m"
     local mapfile_path="$HOME/.config/ssh_shorty/machines.txt"
     local paths_file="$HOME/.config/ssh_shorty/machine-paths.txt"
+    local scripts_file="$HOME/.config/ssh_shorty/scripts.txt"
     local machines=()
 
     if [[ -f "$mapfile_path" ]]; then
@@ -150,6 +151,36 @@ _ssh_shorty_complete() {
         fi
         COMPREPLY=( "${paths[@]}" )
         compopt -o nospace
+    }
+
+    # All registered script names, for `s --script <TAB>`.
+    _get_script_names() {
+        [[ -f "$scripts_file" ]] || return
+        awk 'NF>=3{print $1}' "$scripts_file" 2>/dev/null
+    }
+
+    # Prints "<type> <path>" for a registered script name.
+    _get_script_type_path() {
+        [[ -f "$scripts_file" ]] || return
+        awk -v n="$1" '$1==n{print $2, $3; exit}' "$scripts_file" 2>/dev/null
+    }
+
+    # Best-effort flag discovery: run the script with --help (timeout-guarded,
+    # stdin closed so it can't block waiting for input) and pull --flag-looking
+    # tokens out of the output. A script that doesn't handle --help safely
+    # could run its real logic instead of printing usage — this is a tradeoff
+    # of auto-detecting args from the script itself rather than registering
+    # them by hand.
+    _complete_script_flags() {
+        local script_path="$1" cur="$2"
+        [[ -x "$script_path" ]] || return
+        local out
+        out=$(timeout 2 "$script_path" --help < /dev/null 2>&1)
+        [[ -z "$out" ]] && out=$(timeout 2 "$script_path" -h < /dev/null 2>&1)
+        [[ -z "$out" ]] && return
+        local -a flags
+        mapfile -t flags < <(tr -d '[]<>(),' <<< "$out" | grep -oE -- '--[a-zA-Z][a-zA-Z0-9_-]*' | sort -u)
+        (( ${#flags[@]} > 0 )) && COMPREPLY=( $(compgen -W "${flags[*]}" -- "$cur") )
     }
 
     # For nick:<TAB>: offer aliases first (no / prefix); fall back to remote paths.
@@ -356,6 +387,38 @@ _ssh_shorty_complete() {
                 elif [[ "$cword" -eq 4 ]]; then
                     COMPREPLY=( $(compgen -f -- "$cur") )
                     compopt -o nospace
+                fi
+                ;;
+            --script)
+                if [[ "$cword" -eq 2 ]]; then
+                    local -a script_names
+                    mapfile -t script_names < <(_get_script_names)
+                    COMPREPLY=( $(compgen -W "add remove list ${script_names[*]}" -- "$cur") )
+                elif [[ "${COMP_WORDS[2]}" == "add" ]]; then
+                    if [[ "$cword" -eq 4 ]]; then
+                        COMPREPLY=( $(compgen -W "remote local local+ssh" -- "$cur") )
+                    elif [[ "$cword" -eq 5 ]]; then
+                        COMPREPLY=( $(compgen -f -- "$cur") )
+                        compopt -o nospace
+                    fi
+                elif [[ "${COMP_WORDS[2]}" == "remove" ]]; then
+                    if [[ "$cword" -eq 3 ]]; then
+                        local -a script_names
+                        mapfile -t script_names < <(_get_script_names)
+                        COMPREPLY=( $(compgen -W "${script_names[*]}" -- "$cur") )
+                    fi
+                elif [[ "${COMP_WORDS[2]}" != "list" ]]; then
+                    local _sc_type _sc_path
+                    read -r _sc_type _sc_path < <(_get_script_type_path "${COMP_WORDS[2]}")
+                    if [[ "$_sc_type" == "remote" ]]; then
+                        if [[ "$cword" -eq 3 ]]; then
+                            COMPREPLY=( $(compgen -W "${machines[*]}" -- "$cur") )
+                        elif [[ "$cword" -ge 4 ]]; then
+                            _complete_script_flags "$_sc_path" "$cur"
+                        fi
+                    else
+                        [[ "$cword" -ge 3 ]] && _complete_script_flags "$_sc_path" "$cur"
+                    fi
                 fi
                 ;;
             --tag)

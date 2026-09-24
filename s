@@ -8,6 +8,7 @@ MAPFILE="$HOME/.config/ssh_shorty/machines.txt"
 PATHS_FILE="$HOME/.config/ssh_shorty/machine-paths.txt"
 CONFIG_DIR="$HOME/.config/ssh_shorty"
 FAVS_FILE="$CONFIG_DIR/favorites.txt"
+SCRIPTS_FILE="$CONFIG_DIR/scripts.txt"
 HISTORY_DIR="$HOME/.local/share/ssh_shorty"
 HISTORY_FILE="$HISTORY_DIR/history"
 CACHE_DIR="$HOME/.cache/ssh_shorty"
@@ -421,6 +422,9 @@ usage() {
     printf "  s --watch [prefix|@group]                   live-refreshing fleet status\n"
     printf "  s --run <cmd> <nick|@group|--all>           run command on device(s)\n"
     printf "  s --run-script <nick|@group> <file>         run local script remotely\n"
+    printf "  s --script add <name> <remote|local|local+ssh> <path>   register a script\n"
+    printf "  s --script <name> [nick] [args...]          run a registered script\n"
+    printf "  s --script list | remove <name>             list/remove registered scripts\n"
     printf "  s --tail <nick> <alias|/path>               tail a remote file\n"
     printf "  s --tunnel <nick> [local_port:]remote_port  open SSH tunnel\n"
     printf "  s --close <nick|@group|--all>               close ControlMaster socket\n"
@@ -2112,6 +2116,76 @@ case "$1" in
             done
             printf "\n"
         fi
+        ;;
+
+    --script)
+        case "$2" in
+            add)
+                [[ -z "$3" || -z "$4" || -z "$5" ]] && {
+                    printf "Usage: s --script add <name> <remote|local|local+ssh> <path>\n"; exit 1; }
+                _sc_name="$3"; _sc_type="$4"; _sc_path="$5"
+                case "$_sc_type" in
+                    remote|local|local+ssh) ;;
+                    *) printf "Invalid type '%s' — expected remote, local, or local+ssh.\n" "$_sc_type"; exit 1 ;;
+                esac
+                [[ -f "$_sc_path" ]] || { printf "Script not found: %s\n" "$_sc_path"; exit 1; }
+                _sc_path=$(cd "$(dirname "$_sc_path")" && pwd)/$(basename "$_sc_path")
+                mkdir -p "$CONFIG_DIR"; touch "$SCRIPTS_FILE"
+                if awk -v n="$_sc_name" '$1==n{f=1;exit}END{exit !f}' "$SCRIPTS_FILE" 2>/dev/null; then
+                    printf "'%s' already registered. Use 's --script remove %s' first.\n" "$_sc_name" "$_sc_name"; exit 1
+                fi
+                printf '%s %s %s\n' "$_sc_name" "$_sc_type" "$_sc_path" >> "$SCRIPTS_FILE"
+                printf "Registered: %s (%s) → %s\n" "$_sc_name" "$_sc_type" "$_sc_path"
+                ;;
+            remove)
+                [[ -z "$3" ]] && { printf "Usage: s --script remove <name>\n"; exit 1; }
+                [[ -f "$SCRIPTS_FILE" ]] && awk -v n="$3" '$1!=n' "$SCRIPTS_FILE" > "$SCRIPTS_FILE.tmp" \
+                    && mv "$SCRIPTS_FILE.tmp" "$SCRIPTS_FILE"
+                printf "Removed: %s\n" "$3"
+                ;;
+            list)
+                if [[ ! -s "$SCRIPTS_FILE" ]]; then
+                    printf "No scripts registered. Add one: s --script add <name> <remote|local|local+ssh> <path>\n"
+                    exit 0
+                fi
+                printf "${BOLD}  %-20s %-10s %s${RESET}\n" "NAME" "TYPE" "PATH"
+                while read -r _sc_n _sc_t _sc_p; do
+                    [[ -z "$_sc_n" ]] && continue
+                    printf "  %-20s %-10s %s\n" "$_sc_n" "$_sc_t" "$_sc_p"
+                done < "$SCRIPTS_FILE"
+                ;;
+            "")
+                printf "Usage: s --script add|remove|list|<name> [nick] [args...]\n"; exit 1
+                ;;
+            *)
+                _sc_name="$2"; shift 2
+                _sc_line=$(awk -v n="$_sc_name" '$1==n{print;exit}' "$SCRIPTS_FILE" 2>/dev/null)
+                [[ -z "$_sc_line" ]] && {
+                    printf "Script '%s' not registered. Add it: s --script add %s <remote|local|local+ssh> <path>\n" \
+                        "$_sc_name" "$_sc_name"; exit 1; }
+                _sc_type=$(awk '{print $2}' <<< "$_sc_line")
+                _sc_path=$(awk '{print $3}' <<< "$_sc_line")
+                [[ -f "$_sc_path" ]] || { printf "${RED}Registered script missing on disk: %s${RESET}\n" "$_sc_path"; exit 1; }
+                case "$_sc_type" in
+                    local)
+                        exec "$_sc_path" "$@"
+                        ;;
+                    local+ssh)
+                        # So a local+ssh script can shell out with the same
+                        # ControlMaster reuse / host-key handling s itself uses,
+                        # instead of reinventing its own ssh options.
+                        export S_SSH_OPTS="${SSH_CTRL_OPTS[*]}"
+                        exec "$_sc_path" "$@"
+                        ;;
+                    remote)
+                        [[ -z "$1" ]] && {
+                            printf "Usage: s --script %s <nick|@group|--all> [args...]\n" "$_sc_name"; exit 1; }
+                        _sc_nick="$1"; shift
+                        exec "$SELF" --run-script "$_sc_nick" "$_sc_path" "$@"
+                        ;;
+                esac
+                ;;
+        esac
         ;;
 
     --run)
