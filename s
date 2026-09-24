@@ -490,6 +490,29 @@ _merge_remote_mapfile() {
             printf '%s\n' "$_rl" >> "$_mm"
         fi
     done < "$remote_file"
+
+    # Backfill mac= for a nick that already exists locally but is missing
+    # it while the remote copy has one — e.g. `s --oneshot` or an on-connect
+    # ARP recovery ran on a different machine and learned it there first.
+    # A same-nick match otherwise never looks past "already have this nick",
+    # so a MAC learned elsewhere would never reach this machine otherwise.
+    # Local's own mac= (if already set) always wins — this only fills blanks.
+    local _mm2; _mm2=$(mktemp "$CONFIG_DIR/.sync_m.XXXXXX")
+    awk '
+        NR==FNR {
+            for (i=2;i<=NF;i++) if ($i ~ /^mac=/) rmac[$1]=$i
+            next
+        }
+        {
+            has_mac=0
+            for (i=2;i<=NF;i++) if ($i ~ /^mac=/) has_mac=1
+            line=$0
+            if (!has_mac && ($1 in rmac)) line = line " " rmac[$1]
+            print line
+        }
+    ' "$remote_file" "$_mm" > "$_mm2"
+    mv "$_mm2" "$_mm"
+
     # Dedup by host — local (first occurrence) wins; strips user@ for comparison
     awk 'NF==0||/^[[:space:]]*#/{print;next}{h=$2;sub(/^[^@]*@/,"",h);if(!seen[h]++)print}' \
         "$_mm" > "$MAPFILE"
