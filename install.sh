@@ -157,7 +157,7 @@ if [[ "$UPDATE_MODE" == true ]]; then
     if [[ -f "$ZSH_COMPLETIONS_DIR/_s" ]]; then
         cp "$SCRIPT_DIR/completion.zsh" "$ZSH_COMPLETIONS_DIR/_s"
         echo "  ✓ completion.zsh"
-        rm -f "$HOME/.zcompdump" "$HOME"/.zcompdump-* 2>/dev/null
+        rm -f "$HOME/.zcompdump" "$HOME"/.zcompdump-* 2>/dev/null || true
     fi
     local_xdg="$BASH_COMPLETIONS_DIR/s"
     local_cfg="$CONFIG_DIR/completion.bash"
@@ -388,7 +388,7 @@ if [[ "$USE_ZSH" == true ]]; then
     fi
 
     # Clear stale completion cache so _s is picked up immediately
-    rm -f "$HOME/.zcompdump" "$HOME"/.zcompdump-*
+    rm -f "$HOME/.zcompdump" "$HOME"/.zcompdump-* 2>/dev/null || true
     echo "  Cleared:   ~/.zcompdump (completion cache)"
 fi
 

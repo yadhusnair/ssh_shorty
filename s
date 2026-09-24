@@ -1516,23 +1516,18 @@ _request_access() {
 # memory before install.sh replaces the running script on disk.
 _do_update() {
     local remote_ver="$1"
-    local _upd_dir _tarball _repo_dir _repo_url
-    _upd_dir=$(mktemp -d)
-    trap 'rm -rf "$_upd_dir"' EXIT
-    _tarball="$_upd_dir/repo.tar.gz"
-    _repo_url="https://github.com/yadhusnair/ssh_shorty/archive/refs/heads/main.tar.gz"
     printf "Downloading v%s...\n" "$remote_ver"
-    if ! curl -fsSL --max-time 60 "$_repo_url" -o "$_tarball"; then
-        printf "Download failed.\n"; return 1
+    # Run the exact same published install command (README's curl one-liner)
+    # rather than a separate, bespoke tarball-download path — install.sh
+    # already self-fetches the full repo when piped like this (no sibling
+    # files on disk to find), so this stays cross-platform (its own
+    # ensure_bash4/zsh-detection/offer_fzf logic runs) and can never drift
+    # from what a fresh install actually does.
+    if ! curl -fsSL --max-time 60 \
+            "https://raw.githubusercontent.com/yadhusnair/ssh_shorty/main/install.sh" \
+            | bash -s -- --update; then
+        printf "Update failed.\n"; return 1
     fi
-    if ! tar -xzf "$_tarball" -C "$_upd_dir" 2>/dev/null; then
-        printf "Extract failed.\n"; return 1
-    fi
-    _repo_dir=$(find "$_upd_dir" -maxdepth 1 -type d -name 'ssh_shorty-*' | head -1)
-    if [[ -z "$_repo_dir" || ! -f "$_repo_dir/install.sh" ]]; then
-        printf "Unexpected archive layout — aborted.\n"; return 1
-    fi
-    bash "$_repo_dir/install.sh" --update
     # Sync favorites before handing off
     if [[ -n "$SYNC_HOST" ]]; then
         scp -q -o BatchMode=yes -o ConnectTimeout=5 \
