@@ -292,8 +292,13 @@ _ssh_shorty_complete() {
                         compopt -o nospace 2>/dev/null
                     fi
                 elif [[ "$cword" -eq 3 ]]; then
-                    local _prev2="${COMP_WORDS[2]}"
-                    if [[ "$_prev2" == *:* ]]; then
+                    # bash's COMP_WORDBREAKS splits "nick:path" into three
+                    # physical words (nick, ":", path) — COMP_WORDS[2] alone
+                    # is just the nick, so check the token right after it for
+                    # the literal ":" that marks arg2 as nick:path rather
+                    # than a bare nick (the alias-based `-d <alias> <nick>`
+                    # form).
+                    if [[ "${COMP_WORDS[3]}" == ":" ]]; then
                         # nick:path was arg2 — arg3 is local dest
                         COMPREPLY=( $(compgen -f -- "$cur") )
                         compopt -o nospace
