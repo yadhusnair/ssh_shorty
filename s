@@ -470,6 +470,32 @@ _sync_remove_remote_nick() {
         2>/dev/null
 }
 
+# Merges a freshly-pulled remote machines.txt (given as a file path) into
+# $MAPFILE in place: any nick present only in the remote copy is added; on a
+# nick/host collision, local wins. Shared by _sync_push (merge-before-push,
+# so a concurrent peer's additions aren't lost) and s --sync (merge-on-pull,
+# so pulling never blindly overwrites local-only changes — e.g. a rename
+# that hasn't been pushed yet).
+_merge_remote_mapfile() {
+    local remote_file="$1"
+    [[ -f "$remote_file" ]] || return 1
+    local _mm; _mm=$(mktemp "$CONFIG_DIR/.sync_m.XXXXXX")
+    if [[ -f "$MAPFILE" ]]; then cp "$MAPFILE" "$_mm"; else : > "$_mm"; fi
+    # Append remote entries whose nick is not in local (preserves peer additions)
+    while IFS= read -r _rl; do
+        [[ -z "$_rl" || "$_rl" == \#* ]] && continue
+        local _rn; _rn=$(printf '%s' "$_rl" | awk '{print $1}')
+        [[ -z "$_rn" ]] && continue
+        if ! awk -v n="$_rn" '$1==n{found=1;exit}END{exit !found}' "$_mm" 2>/dev/null; then
+            printf '%s\n' "$_rl" >> "$_mm"
+        fi
+    done < "$remote_file"
+    # Dedup by host — local (first occurrence) wins; strips user@ for comparison
+    awk 'NF==0||/^[[:space:]]*#/{print;next}{h=$2;sub(/^[^@]*@/,"",h);if(!seen[h]++)print}' \
+        "$_mm" > "$MAPFILE"
+    rm -f "$_mm"
+}
+
 _sync_push() {
     [[ -z "$SYNC_HOST" ]] && return 0
     local rdir; rdir=$(_sync_remote_dir)
@@ -477,22 +503,8 @@ _sync_push() {
     # Pull-before-push: fetch remote, union-merge (add remote nicks absent locally), dedup IPs
     local _spr; _spr=$(mktemp "$CONFIG_DIR/.sync_r.XXXXXX")
     if scp -q -o BatchMode=yes -o ConnectTimeout=5 \
-            "${SYNC_HOST}:${SYNC_REMOTE_PATH}" "$_spr" 2>/dev/null && [[ -f "$MAPFILE" ]]; then
-        local _spm; _spm=$(mktemp "$CONFIG_DIR/.sync_m.XXXXXX")
-        cp "$MAPFILE" "$_spm"
-        # Append remote entries whose nick is not in local (preserves peer additions)
-        while IFS= read -r _rl; do
-            [[ -z "$_rl" || "$_rl" == \#* ]] && continue
-            local _rn; _rn=$(printf '%s' "$_rl" | awk '{print $1}')
-            [[ -z "$_rn" ]] && continue
-            if ! awk -v n="$_rn" '$1==n{found=1;exit}END{exit !found}' "$_spm" 2>/dev/null; then
-                printf '%s\n' "$_rl" >> "$_spm"
-            fi
-        done < "$_spr"
-        # Dedup by host — local (first occurrence) wins; strips user@ for comparison
-        awk 'NF==0||/^[[:space:]]*#/{print;next}{h=$2;sub(/^[^@]*@/,"",h);if(!seen[h]++)print}' \
-            "$_spm" > "$MAPFILE"
-        rm -f "$_spm"
+            "${SYNC_HOST}:${SYNC_REMOTE_PATH}" "$_spr" 2>/dev/null; then
+        _merge_remote_mapfile "$_spr"
     fi
     rm -f "$_spr"
 
@@ -613,7 +625,11 @@ _sync_bg() {
                 local _dl; _dl=$(mktemp "$CONFIG_DIR/.pull.XXXXXX")
                 if scp -q -o BatchMode=yes -o ConnectTimeout=5 \
                         "${SYNC_HOST}:${SYNC_REMOTE_PATH}" "$_dl" 2>/dev/null; then
-                    mv "$_dl" "$MAPFILE"
+                    # Merge, don't overwrite — this runs silently in the
+                    # background on every command, so a blind overwrite here
+                    # would clobber any local-only change without warning.
+                    _merge_remote_mapfile "$_dl"
+                    rm -f "$_dl"
                     _dedup_mapfile "$MAPFILE"
                     local _pdl; _pdl=$(mktemp "$CONFIG_DIR/.pull.XXXXXX")
                     scp -q -o BatchMode=yes -o ConnectTimeout=5 \
@@ -637,7 +653,7 @@ _sync_bg() {
             local _dl; _dl=$(mktemp "$CONFIG_DIR/.pull.XXXXXX")
             scp -q -o BatchMode=yes -o ConnectTimeout=5 \
                 "${SYNC_HOST}:${SYNC_REMOTE_PATH}" "$_dl" 2>/dev/null \
-                && { mv "$_dl" "$MAPFILE"; _dedup_mapfile "$MAPFILE"; } || rm -f "$_dl"
+                && { _merge_remote_mapfile "$_dl"; rm -f "$_dl"; _dedup_mapfile "$MAPFILE"; } || rm -f "$_dl"
             local _pdl; _pdl=$(mktemp "$CONFIG_DIR/.pull.XXXXXX")
             scp -q -o BatchMode=yes -o ConnectTimeout=5 \
                 "${SYNC_HOST}:${PATHS_SYNC_REMOTE_PATH}" "$_pdl" 2>/dev/null \
@@ -2580,8 +2596,15 @@ case "$1" in
         _sdl=$(mktemp "$CONFIG_DIR/.pull.XXXXXX")
         if scp -q -o BatchMode=yes -o ConnectTimeout=10 \
                 "${SYNC_HOST}:${SYNC_REMOTE_PATH}" "$_sdl" 2>/dev/null; then
-            mv "$_sdl" "$MAPFILE"; _dedup_mapfile "$MAPFILE"
-            printf "  ${GREEN}pulled${RESET}   %s:%s\n" "$SYNC_HOST" "$SYNC_REMOTE_PATH"
+            # Merge, don't overwrite — a straight overwrite here would silently
+            # discard any local-only change (e.g. a rename) not yet pushed.
+            _merge_remote_mapfile "$_sdl"
+            rm -f "$_sdl"
+            _dedup_mapfile "$MAPFILE"
+            printf "  ${GREEN}merged${RESET}   %s:%s\n" "$SYNC_HOST" "$SYNC_REMOTE_PATH"
+            scp -q -o BatchMode=yes -o ConnectTimeout=10 \
+                "$MAPFILE" "${SYNC_HOST}:${SYNC_REMOTE_PATH}" 2>/dev/null \
+                && printf "  ${GREEN}pushed${RESET}   %s → %s:%s\n" "$MAPFILE" "$SYNC_HOST" "$SYNC_REMOTE_PATH"
             _spdl=$(mktemp "$CONFIG_DIR/.pull.XXXXXX")
             scp -q -o BatchMode=yes -o ConnectTimeout=10 \
                 "${SYNC_HOST}:${PATHS_SYNC_REMOTE_PATH}" "$_spdl" 2>/dev/null \
