@@ -638,13 +638,15 @@ _sync_bg() {
     (( age < 30 )) && return
     local rdir; rdir=$(_sync_remote_dir)
     local local_ver="$CONFIG_DIR/.machines_version"
-    # Skip if local file was touched more recently than last sync (un-pushed local edit in progress)
-    if [[ -f "$MAPFILE" && -f "$stamp" ]]; then
-        local _mtime _stime
-        _mtime=$(stat -c %Y "$MAPFILE" 2>/dev/null || echo 0)
-        _stime=$(stat -c %Y "$stamp"   2>/dev/null || echo 0)
-        (( _mtime > _stime )) && return
-    fi
+    # (No "skip if MAPFILE is newer than stamp" guard here anymore — it was
+    # self-defeating: this function's own merge below writes to MAPFILE
+    # *after* touching the stamp, so MAPFILE's mtime ends up newer than the
+    # stamp from that very same successful run, permanently blocking every
+    # future background sync from then on. Safe to drop: any command that
+    # edits MAPFILE directly (--add/--rename/--set/...) already calls
+    # _sync_push itself right after, and _merge_remote_mapfile's union-merge
+    # is non-destructive — local content always wins on conflicts — so a
+    # background sync can never clobber an in-flight local edit anyway.)
     (
         touch "$stamp" 2>/dev/null
         local tmp_ver; tmp_ver=$(mktemp)
