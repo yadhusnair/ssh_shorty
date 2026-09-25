@@ -972,7 +972,7 @@ _wt_search_and_pick() {
             lines+=("$(printf '%-28s %s' "${_sp_items[$i]}" "${_sp_items[$((i+1))]}")")
         done
         choice=$(printf '%s\n' "${lines[@]}" \
-            | fzf --height=90% --border --reverse --prompt="Search> " --header="$title — $prompt")
+            | fzf --height=~90% --border --reverse --prompt="Search> " --header="$title — $prompt")
         [[ -z "$choice" ]] && return 1
         printf '%s' "${choice%% *}"
         return 0
@@ -1037,7 +1037,7 @@ _sc_pick_args_fzf() {
 
     local picked
     picked=$(printf '%s\n' "${flags[@]}" \
-        | fzf --multi --height=50% --border=rounded \
+        | fzf --multi --height=~50% --border=rounded \
               --prompt="  args → " \
               --header="  Tab: select multiple | Enter: confirm | Esc: run with no args" \
               --color='fg+:bold,gutter:-1')
@@ -1337,7 +1337,7 @@ _wt_pick_script_type() {
     local current="$1"
     if _fzf_enabled; then
         printf '%s\n' remote local local+ssh \
-            | fzf --height=30% --border=rounded --prompt="  type → " \
+            | fzf --height=~30% --border=rounded --prompt="  type → " \
                   --header="  current: ${current:-none}" \
                   --color='fg+:bold,gutter:-1'
     else
@@ -1445,7 +1445,7 @@ _wt_edit_scripts() {
                 if [[ "$type" != "local" ]]; then
                     _require_mapfile
                     m_pick=$(awk 'NF >= 2 && $1 !~ /^#/ {print $1, $2}' "$MAPFILE" | \
-                        fzf --ansi --height=50% --border=rounded \
+                        fzf --ansi --height=~50% --border=rounded \
                         --prompt="  target for $choice → " \
                         2>/dev/null | awk '{print $1}')
                     [[ -z "$m_pick" ]] && continue
@@ -1916,7 +1916,7 @@ if [[ -z "$1" ]]; then
             printf "\n"
         }' "$MAPFILE" | \
         fzf --ansi \
-            --height=50% \
+            --height=~50% \
             --border=rounded \
             --prompt="  connect → " \
             --header="  Enter: connect | Ctrl-P: ping | Ctrl-K: keydeploy | Ctrl-S: sysinfo | Ctrl-E: edit" \
@@ -2402,7 +2402,7 @@ case "$1" in
                         if ($2 == "local+ssh") printf "%-20s %-10s %s (dir: %s)\n", $1, $2, $3, dir;
                         else printf "%-20s %-10s %s\n", $1, $2, $3
                     }' "$SCRIPTS_FILE" | \
-                    fzf --ansi --height=50% --border=rounded \
+                    fzf --ansi --height=~50% --border=rounded \
                         --prompt="  script → " \
                         --header="  Enter: run | Ctrl-E: edit scripts.txt | Ctrl-O: edit script file" \
                         --color='fg+:bold,gutter:-1' \
@@ -2422,7 +2422,7 @@ case "$1" in
                             for (i=3; i<=NF; i++) if ($i ~ /^#/) printf "  \033[2m%s\033[0m", $i
                             printf "\n"
                         }' "$MAPFILE" | \
-                        fzf --ansi --height=50% --border=rounded \
+                        fzf --ansi --height=~50% --border=rounded \
                             --prompt="  target for $PICK → " \
                             --color='fg+:bold,gutter:-1' \
                             2>/dev/null | awk '{print $1}')
