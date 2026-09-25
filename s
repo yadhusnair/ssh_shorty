@@ -1389,17 +1389,20 @@ _wt_edit_machines() {
     _require_mapfile
     local dirty=0
     local -a removed_nicks=()
-    while true; do
-        local action
-        action=$(whiptail --title "Fleet" --menu "Choose an action (Esc to exit)" 14 60 3 \
-            edit "Edit a device" \
-            add "Add a device" \
-            delete "Delete a device" \
-            3>&1 1>&2 2>&3) || break
+    # One action per invocation, not a loop back to this menu — Esc, or
+    # finishing any single action (add/edit/delete), both exit straight back
+    # to the shell instead of re-showing "Choose an action".
+    local action
+    action=$(whiptail --title "Fleet" --menu "Choose an action (Esc to exit)" 14 60 3 \
+        edit "Edit a device" \
+        add "Add a device" \
+        delete "Delete a device" \
+        3>&1 1>&2 2>&3)
+    if [[ $? -eq 0 ]]; then
         case "$action" in
             edit)
-                local nick; nick=$(_wt_pick_device "Select a device to edit") || continue
-                if _wt_edit_device "$nick"; then
+                local nick; nick=$(_wt_pick_device "Select a device to edit")
+                if [[ -n "$nick" ]] && _wt_edit_device "$nick"; then
                     dirty=1
                     [[ -n "$WT_RENAMED_FROM" ]] && removed_nicks+=("$WT_RENAMED_FROM")
                 fi
@@ -1408,14 +1411,14 @@ _wt_edit_machines() {
                 _wt_add_device && dirty=1
                 ;;
             delete)
-                local nick; nick=$(_wt_pick_device "Select a device to delete") || continue
-                if _wt_delete_device "$nick"; then
+                local nick; nick=$(_wt_pick_device "Select a device to delete")
+                if [[ -n "$nick" ]] && _wt_delete_device "$nick"; then
                     dirty=1
                     removed_nicks+=("$nick")
                 fi
                 ;;
         esac
-    done
+    fi
     clear 2>/dev/null
     if (( dirty )); then
         _dedup_mapfile "$MAPFILE"
@@ -1481,27 +1484,28 @@ _wt_edit_paths() {
     mkdir -p "$CONFIG_DIR"
     [[ -f "$PATHS_FILE" ]] || touch "$PATHS_FILE"
     local dirty=0
-    while true; do
-        local action
-        action=$(whiptail --title "Path aliases" --menu "Choose an action (Esc to exit)" 14 60 3 \
-            edit "Edit a path alias" \
-            add "Add a path alias" \
-            delete "Delete a path alias" \
-            3>&1 1>&2 2>&3) || break
+    # One action per invocation, not a loop back to this menu.
+    local action
+    action=$(whiptail --title "Path aliases" --menu "Choose an action (Esc to exit)" 14 60 3 \
+        edit "Edit a path alias" \
+        add "Add a path alias" \
+        delete "Delete a path alias" \
+        3>&1 1>&2 2>&3)
+    if [[ $? -eq 0 ]]; then
         case "$action" in
             edit)
-                local choice; choice=$(_wt_pick_path "Select an alias to edit") || continue
-                _wt_edit_path "${choice%%/*}" "${choice#*/}" && dirty=1
+                local choice; choice=$(_wt_pick_path "Select an alias to edit")
+                [[ -n "$choice" ]] && _wt_edit_path "${choice%%/*}" "${choice#*/}" && dirty=1
                 ;;
             add)
                 _wt_add_path && dirty=1
                 ;;
             delete)
-                local choice; choice=$(_wt_pick_path "Select an alias to delete") || continue
-                _wt_delete_path "${choice%%/*}" "${choice#*/}" && dirty=1
+                local choice; choice=$(_wt_pick_path "Select an alias to delete")
+                [[ -n "$choice" ]] && _wt_delete_path "${choice%%/*}" "${choice#*/}" && dirty=1
                 ;;
         esac
-    done
+    fi
     clear 2>/dev/null
     if (( dirty )); then
         printf "path aliases updated.\n"
@@ -1615,81 +1619,80 @@ _wt_pick_script() {
 _wt_edit_scripts() {
     mkdir -p "$CONFIG_DIR"
     [[ -f "$SCRIPTS_FILE" ]] || touch "$SCRIPTS_FILE"
-    while true; do
-        local action
-        action=$(whiptail --title "Scripts" --menu "Choose an action (Esc to exit)" 17 60 6 \
-            run "Run a script" \
-            edit "Edit a script" \
-            add "Add a script" \
-            delete "Delete a script" \
-            push "Push local scripts to the server" \
-            pull "Pull shared scripts from the server" \
-            3>&1 1>&2 2>&3) || break
-        case "$action" in
-            run)
-                local choice; choice=$(_wt_pick_script "Select a script to run") || continue
-                local line; line=$(awk -v n="$choice" '$1==n{print;exit}' "$SCRIPTS_FILE")
-                local type; type=$(awk '{print $2}' <<< "$line")
-                local sc_path; sc_path=$(awk '{print $3}' <<< "$line")
-                
-                local m_pick=""
-                if [[ "$type" != "local" ]]; then
-                    _require_mapfile
-                    m_pick=$(awk 'NF >= 2 && $1 !~ /^#/ {print $1, $2}' "$MAPFILE" | \
-                        fzf --ansi --height=~50% --border=rounded \
-                        --prompt="  target for $choice → " \
-                        2>/dev/null | awk '{print $1}')
-                    [[ -z "$m_pick" ]] && continue
-                fi
-                
-                local flags=""
-                [[ -x "$sc_path" ]] && flags=$(_sc_detect_flags "$sc_path")
+    # One action per invocation, not a loop back to this menu — Esc, or
+    # finishing any single action (add/edit/delete/push/pull), both exit
+    # straight back to the shell instead of re-showing "Choose an action".
+    local action
+    action=$(whiptail --title "Scripts" --menu "Choose an action (Esc to exit)" 17 60 6 \
+        run "Run a script" \
+        edit "Edit a script" \
+        add "Add a script" \
+        delete "Delete a script" \
+        push "Push local scripts to the server" \
+        pull "Pull shared scripts from the server" \
+        3>&1 1>&2 2>&3) || return 0
+    case "$action" in
+        run)
+            local choice; choice=$(_wt_pick_script "Select a script to run") || return 0
+            local line; line=$(awk -v n="$choice" '$1==n{print;exit}' "$SCRIPTS_FILE")
+            local type; type=$(awk '{print $2}' <<< "$line")
+            local sc_path; sc_path=$(awk '{print $3}' <<< "$line")
 
-                local -a arg_array=()
-                if [[ -n "$flags" ]] && _fzf_enabled; then
-                    # fzf multi-select over the discovered flags, prompting for
-                    # a value per flag picked — Esc/nothing picked = run with
-                    # no args (see _sc_pick_args_fzf's own header text).
-                    _sc_pick_args_fzf arg_array "$sc_path" "$choice"
+            local m_pick=""
+            if [[ "$type" != "local" ]]; then
+                _require_mapfile
+                m_pick=$(awk 'NF >= 2 && $1 !~ /^#/ {print $1, $2}' "$MAPFILE" | \
+                    fzf --ansi --height=~50% --border=rounded \
+                    --prompt="  target for $choice → " \
+                    2>/dev/null | awk '{print $1}')
+                [[ -z "$m_pick" ]] && return 0
+            fi
+
+            local flags=""
+            [[ -x "$sc_path" ]] && flags=$(_sc_detect_flags "$sc_path")
+
+            local -a arg_array=()
+            if [[ -n "$flags" ]] && _fzf_enabled; then
+                # fzf multi-select over the discovered flags, prompting for
+                # a value per flag picked — Esc/nothing picked = run with
+                # no args (see _sc_pick_args_fzf's own header text).
+                _sc_pick_args_fzf arg_array "$sc_path" "$choice"
+            else
+                local args
+                if [[ -n "$flags" ]]; then
+                    args=$(whiptail --title "Arguments" --inputbox "Enter arguments for $choice\n\nDiscovered flags: $(paste -sd ' ' <<< "$flags")" 10 70 3>&1 1>&2 2>&3) || return 0
                 else
-                    local args
-                    if [[ -n "$flags" ]]; then
-                        args=$(whiptail --title "Arguments" --inputbox "Enter arguments for $choice\n\nDiscovered flags: $(paste -sd ' ' <<< "$flags")" 10 70 3>&1 1>&2 2>&3) || continue
-                    else
-                        args=$(whiptail --title "Arguments" --inputbox "Enter arguments for $choice (optional):" 10 70 3>&1 1>&2 2>&3) || continue
-                    fi
-                    # Convert string into array respecting basic spaces (quotes won't be evaluated, but it's safe)
-                    read -r -a arg_array <<< "$args"
+                    args=$(whiptail --title "Arguments" --inputbox "Enter arguments for $choice (optional):" 10 70 3>&1 1>&2 2>&3) || return 0
                 fi
-                
-                if [[ "$type" == "local" ]]; then
-                    exec "$SELF" --script "$choice" "${arg_array[@]}"
-                else
-                    exec "$SELF" --script "$choice" "$m_pick" "${arg_array[@]}"
-                fi
-                ;;
-            edit)
-                local choice; choice=$(_wt_pick_script "Select a script to edit") || continue
-                local line; line=$(awk -v n="$choice" '$1==n{print;exit}' "$SCRIPTS_FILE")
-                _wt_edit_script_entry "$choice" $(awk '{print $2, $3, $4}' <<< "$line")
-                ;;
-            add)
-                _wt_add_script
-                ;;
-            delete)
-                local choice; choice=$(_wt_pick_script "Select a script to delete") || continue
-                _wt_delete_script "$choice"
-                ;;
-            push)
-                _scr_push_cmd
-                read -n1 -r -p $'\nPress any key to continue...' _
-                ;;
-            pull)
-                _scr_pull_cmd
-                read -n1 -r -p $'\nPress any key to continue...' _
-                ;;
-        esac
-    done
+                # Convert string into array respecting basic spaces (quotes won't be evaluated, but it's safe)
+                read -r -a arg_array <<< "$args"
+            fi
+
+            if [[ "$type" == "local" ]]; then
+                exec "$SELF" --script "$choice" "${arg_array[@]}"
+            else
+                exec "$SELF" --script "$choice" "$m_pick" "${arg_array[@]}"
+            fi
+            ;;
+        edit)
+            local choice; choice=$(_wt_pick_script "Select a script to edit") || return 0
+            local line; line=$(awk -v n="$choice" '$1==n{print;exit}' "$SCRIPTS_FILE")
+            _wt_edit_script_entry "$choice" $(awk '{print $2, $3, $4}' <<< "$line")
+            ;;
+        add)
+            _wt_add_script
+            ;;
+        delete)
+            local choice; choice=$(_wt_pick_script "Select a script to delete") || return 0
+            _wt_delete_script "$choice"
+            ;;
+        push)
+            _scr_push_cmd
+            ;;
+        pull)
+            _scr_pull_cmd
+            ;;
+    esac
 }
 # Format: <alias> = <command> [#var <name> <before|after>]. COMMAND (and the
 # #var suffix) are taken via bash parameter expansion on the raw line (not awk
@@ -1799,27 +1802,28 @@ _wt_edit_favs() {
     mkdir -p "$CONFIG_DIR"
     touch "$FAVS_FILE"
     local dirty=0
-    while true; do
-        local action
-        action=$(whiptail --title "Favorites" --menu "Choose an action (Esc to exit)" 14 60 3 \
-            edit "Edit a favorite" \
-            add "Add a favorite" \
-            delete "Delete a favorite" \
-            3>&1 1>&2 2>&3) || break
+    # One action per invocation, not a loop back to this menu.
+    local action
+    action=$(whiptail --title "Favorites" --menu "Choose an action (Esc to exit)" 14 60 3 \
+        edit "Edit a favorite" \
+        add "Add a favorite" \
+        delete "Delete a favorite" \
+        3>&1 1>&2 2>&3)
+    if [[ $? -eq 0 ]]; then
         case "$action" in
             edit)
-                local alias; alias=$(_wt_pick_fav "Select a favorite to edit") || continue
-                _wt_edit_fav "$alias" && dirty=1
+                local alias; alias=$(_wt_pick_fav "Select a favorite to edit")
+                [[ -n "$alias" ]] && _wt_edit_fav "$alias" && dirty=1
                 ;;
             add)
                 _wt_add_fav && dirty=1
                 ;;
             delete)
-                local alias; alias=$(_wt_pick_fav "Select a favorite to delete") || continue
-                _wt_delete_fav "$alias" && dirty=1
+                local alias; alias=$(_wt_pick_fav "Select a favorite to delete")
+                [[ -n "$alias" ]] && _wt_delete_fav "$alias" && dirty=1
                 ;;
         esac
-    done
+    fi
     clear 2>/dev/null
     if (( dirty )); then
         printf "${GREEN}Favorites updated.${RESET}\n"
