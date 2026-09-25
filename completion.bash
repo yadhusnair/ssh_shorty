@@ -179,7 +179,7 @@ _ssh_shorty_complete() {
         [[ -z "$out" ]] && out=$(timeout 2 "$script_path" -h < /dev/null 2>&1)
         [[ -z "$out" ]] && return
         local -a flags
-        mapfile -t flags < <(tr -d '[]<>(),' <<< "$out" | grep -oE -- '--[a-zA-Z][a-zA-Z0-9_-]*' | sort -u)
+        mapfile -t flags < <(tr -d '[]<>(),' <<< "$out" | grep -oE -- '--[a-zA-Z][a-zA-Z0-9_-]*' | sort -u | grep -v -- '^--help$')
         (( ${#flags[@]} > 0 )) && COMPREPLY=( $(compgen -W "${flags[*]}" -- "$cur") )
     }
 

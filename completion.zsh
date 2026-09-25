@@ -210,7 +210,7 @@ _ssh_shorty() {
     [[ -z "$out" ]] && out=$(timeout 2 "$script_path" -h < /dev/null 2>&1)
     [[ -z "$out" ]] && return
     local -a flags
-    flags=(${(fu)"$(tr -d '[]<>(),' <<< "$out" | grep -oE -- '--[a-zA-Z][a-zA-Z0-9_-]*' | sort -u)"})
+    flags=(${(fu)"$(tr -d '[]<>(),' <<< "$out" | grep -oE -- '--[a-zA-Z][a-zA-Z0-9_-]*' | sort -u | grep -v -- '^--help$')"})
     (( ${#flags} > 0 )) && compadd -- "${flags[@]}"
   }
 
