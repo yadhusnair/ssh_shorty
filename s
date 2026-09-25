@@ -2452,6 +2452,7 @@ case "$1" in
                             _sc_pick_args_fzf _sc_args "$_sc_path"
                             set -- "${_sc_args[@]}"
                         fi
+                        printf "${CYAN}Running:${RESET} %s %s\n" "$_sc_name" "$*"
                         exec "$_sc_path" "$@"
                         ;;
                     local+ssh)
@@ -2485,7 +2486,7 @@ case "$1" in
                             _t=$(_apply_mac_resolution "${run_nicks[$i]}" "${run_targets[$i]}")
                             _ip=$(echo "$_t" | sed -E 's/.*@//' | awk -F: '{print $1}')
 
-                            printf "${CYAN}[%s]${RESET} Running %s locally against %s...\n" "${run_nicks[$i]}" "$_script_base" "$_ip"
+                            printf "${CYAN}[%s]${RESET} Running: %s --ip %s %s\n" "${run_nicks[$i]}" "$_script_base" "$_ip" "$*"
                             "$_sc_path" --ip "$_ip" "$@"
                         done
                         exit 0
@@ -2499,6 +2500,7 @@ case "$1" in
                             _sc_pick_args_fzf _sc_args "$_sc_path"
                             set -- "${_sc_args[@]}"
                         fi
+                        printf "${CYAN}Running:${RESET} %s on %s %s\n" "$_sc_name" "$_sc_nick" "$*"
                         exec "$SELF" --run-script "$_sc_nick" "$_sc_path" "$@"
                         ;;
                 esac
