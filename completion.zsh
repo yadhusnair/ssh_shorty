@@ -405,7 +405,7 @@ _ssh_shorty() {
         ;;
       --script)
         if (( CURRENT == 3 )); then
-          compadd -- add remove list edit sync
+          compadd -- add remove list edit push pull
           _script_names
         elif [[ "${words[3]}" == "add" ]]; then
           if (( CURRENT == 5 )); then
@@ -415,7 +415,7 @@ _ssh_shorty() {
           fi
         elif [[ "${words[3]}" == "remove" ]]; then
           (( CURRENT == 4 )) && _script_names
-        elif [[ "${words[3]}" == "list" || "${words[3]}" == "sync" ]]; then
+        elif [[ "${words[3]}" == "list" || "${words[3]}" == "push" || "${words[3]}" == "pull" ]]; then
           :
         else
           local -a reply

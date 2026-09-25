@@ -427,7 +427,7 @@ usage() {
     printf "  s --script add <name> <remote|local|local+ssh> [path]   register a script\n"
     printf "  s --script <name> [nick] [args...]          run a registered script\n"
     printf "  s --script list | remove <name>             list/remove registered scripts\n"
-    printf "  s --script sync                             push/pull shared scripts w/ server\n"
+    printf "  s --script push | pull                       push/pull shared scripts w/ server\n"
     printf "  s --tail <nick> <alias|/path>               tail a remote file\n"
     printf "  s --tunnel <nick> [local_port:]remote_port  open SSH tunnel\n"
     printf "  s --close <nick|@group|--all>               close ControlMaster socket\n"
@@ -1067,8 +1067,8 @@ _sc_pick_args_fzf() {
 # ── shared scripts/ folder (SCRIPTS_DIR) + sync with the team's SYNC_HOST ──────
 # Scripts you register with `s --script add` live wherever you point Path at,
 # but the *shared* ones (the ones everyone should be able to find and register)
-# live in this one folder, next to machines.txt. `s --script sync` pushes/pulls
-# this folder's contents to/from SYNC_HOST — it never touches scripts.txt, so
+# live in this one folder, next to machines.txt. `s --script push`/`pull`
+# move this folder's contents to/from SYNC_HOST — neither touches scripts.txt, so
 # each person still runs their own `add` (picking from this folder via fzf) to
 # decide their own type/dir for a script that showed up here.
 
@@ -1206,13 +1206,19 @@ _scr_push() {
     done
 }
 
-# `s --script sync`: pulls everything new automatically, then lets you
-# fzf multi-select which of your local scripts (if any) to push up.
-_scr_sync() {
+# `s --script pull`: pulls every shared script from SYNC_HOST into SCRIPTS_DIR.
+_scr_pull_cmd() {
     [[ -z "$SYNC_HOST" ]] && { printf "No SYNC_HOST configured — set it in %s (SYNC_HOST=\"user@host\").\n" "$CONFIG_DIR/config"; return 1; }
     mkdir -p "$SCRIPTS_DIR"
     printf "${CYAN}Pulling shared scripts...${RESET}\n"
     _scr_pull
+}
+
+# `s --script push`: fzf multi-select which of your local scripts to push
+# up to SYNC_HOST's shared scripts dir.
+_scr_push_cmd() {
+    [[ -z "$SYNC_HOST" ]] && { printf "No SYNC_HOST configured — set it in %s (SYNC_HOST=\"user@host\").\n" "$CONFIG_DIR/config"; return 1; }
+    mkdir -p "$SCRIPTS_DIR"
 
     local -a local_files=()
     while IFS= read -r f; do local_files+=("$f"); done \
@@ -1605,12 +1611,13 @@ _wt_edit_scripts() {
     [[ -f "$SCRIPTS_FILE" ]] || touch "$SCRIPTS_FILE"
     while true; do
         local action
-        action=$(whiptail --title "Scripts" --menu "Choose an action (Esc to exit)" 16 60 5 \
+        action=$(whiptail --title "Scripts" --menu "Choose an action (Esc to exit)" 17 60 6 \
             run "Run a script" \
             edit "Edit a script" \
             add "Add a script" \
             delete "Delete a script" \
-            sync "Push/pull shared scripts with the server" \
+            push "Push local scripts to the server" \
+            pull "Pull shared scripts from the server" \
             3>&1 1>&2 2>&3) || break
         case "$action" in
             run)
@@ -1667,8 +1674,12 @@ _wt_edit_scripts() {
                 local choice; choice=$(_wt_pick_script "Select a script to delete") || continue
                 _wt_delete_script "$choice"
                 ;;
-            sync)
-                _scr_sync
+            push)
+                _scr_push_cmd
+                read -n1 -r -p $'\nPress any key to continue...' _
+                ;;
+            pull)
+                _scr_pull_cmd
                 read -n1 -r -p $'\nPress any key to continue...' _
                 ;;
         esac
@@ -2562,8 +2573,11 @@ case "$1" in
                     fi
                 done < "$SCRIPTS_FILE"
                 ;;
-            sync)
-                _scr_sync
+            push)
+                _scr_push_cmd
+                ;;
+            pull)
+                _scr_pull_cmd
                 ;;
             ""|edit)
                 [[ ! -f "$SCRIPTS_FILE" ]] && touch "$SCRIPTS_FILE"
@@ -2620,7 +2634,7 @@ case "$1" in
                         exec "$SELF" --script "$PICK" "$M_PICK"
                     fi
                 else
-                    printf "Usage: s --script add|remove|list|edit|sync|<name> [nick] [args...]\n"; exit 1
+                    printf "Usage: s --script add|remove|list|edit|push|pull|<name> [nick] [args...]\n"; exit 1
                 fi
                 ;;
             *)
