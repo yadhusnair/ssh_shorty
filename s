@@ -446,6 +446,7 @@ usage() {
     printf "  s --tag <nickname> <tag>                    add a tag to a device (# auto-added)\n"
     printf "  s --untag <nickname> <tag>                  remove a tag from a device\n"
     printf "  s --set-host                                configure SYNC_HOST (creates its folder)\n"
+    printf "  s --unset-host                              stop syncing (clears SYNC_HOST locally)\n"
     printf "  s --sync                                    pull/push fleet from SYNC_HOST\n"
     printf "  s --ping <nick|@group|prefix|--all>         check reachability\n"
     printf "  s --oneshot                                 fleet-wide MAC/IP reconciliation\n"
@@ -3282,6 +3283,19 @@ case "$1" in
 
         printf "${GREEN}Saved.${RESET} SYNC_HOST=%s  SYNC_REMOTE_PATH=%s\n" "$SYNC_HOST" "$SYNC_REMOTE_PATH"
         printf "Run 's --sync' to start syncing your fleet.\n"
+        ;;
+
+    --unset-host)
+        if [[ -z "$SYNC_HOST" ]]; then
+            printf "No SYNC_HOST configured — nothing to unset.\n"; exit 0
+        fi
+        _uh_prev="$SYNC_HOST"
+        if [[ -f "$CONFIG_DIR/config" ]]; then
+            grep -v '^SYNC_HOST=\|^SYNC_REMOTE_PATH=' "$CONFIG_DIR/config" > "$CONFIG_DIR/.config.tmp" 2>/dev/null
+            mv "$CONFIG_DIR/.config.tmp" "$CONFIG_DIR/config"
+        fi
+        printf "${GREEN}Unset.${RESET} SYNC_HOST was: %s\n" "$_uh_prev"
+        printf "This only stops syncing from this machine — nothing was removed from the server. Run 's --set-host' to configure a new one.\n"
         ;;
 
     --sync)

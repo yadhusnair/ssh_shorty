@@ -14,7 +14,7 @@ _ssh_shorty_complete() {
         [[ "${COMP_WORDS[i]}" == ":" ]] && (( cword -= 2 ))
     done
 
-    local subcommands="--list --add --set --set-mac --add-alt --remove-alt --rename --remove --tag --untag --set-host --sync --ping --oneshot --poll --edit --paths --help --update --fav --status --watch --run --run-script --script --sysinfo --tail --tunnel --close --register --export-ssh-config --keydeploy --last --import -u --upload --docker-cp --docker-download -d --download --view -m"
+    local subcommands="--list --add --set --set-mac --add-alt --remove-alt --rename --remove --tag --untag --set-host --unset-host --sync --ping --oneshot --poll --edit --paths --help --update --fav --status --watch --run --run-script --script --sysinfo --tail --tunnel --close --register --export-ssh-config --keydeploy --last --import -u --upload --docker-cp --docker-download -d --download --view -m"
     local mapfile_path="$HOME/.config/ssh_shorty/machines.txt"
     local paths_file="$HOME/.config/ssh_shorty/machine-paths.txt"
     local scripts_file="$HOME/.config/ssh_shorty/scripts.txt"
