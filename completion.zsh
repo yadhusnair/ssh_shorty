@@ -380,7 +380,7 @@ _ssh_shorty() {
           if [[ "$PREFIX" == *:* ]]; then
             _nick_colon_complete "$PREFIX"
           else
-            compadd -S '' -- "${machines[@]}"
+            compadd -S ':' -- "${machines[@]}"
           fi
         fi
         ;;
