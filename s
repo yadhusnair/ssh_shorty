@@ -1329,6 +1329,26 @@ _wt_edit_paths() {
 
 # ── whiptail menu/form editor for favorites.txt ────────────────────────────────
 
+# Picks a script type (remote|local|local+ssh) — a fixed 3-way choice, so a
+# picker beats free-text (a stray keystroke on the pre-filled --inputbox
+# value silently produces garbage like "local+sshlocal"). fzf when available;
+# a whiptail --menu (a real widget, unlike --form) otherwise.
+_wt_pick_script_type() {
+    local current="$1"
+    if _fzf_enabled; then
+        printf '%s\n' remote local local+ssh \
+            | fzf --height=30% --border=rounded --prompt="  type → " \
+                  --header="  current: ${current:-none}" \
+                  --color='fg+:bold,gutter:-1'
+    else
+        whiptail --title "Script type" --menu "Choose a type (current: ${current:-none})" 13 60 3 \
+            remote    "runs ON the target device" \
+            local     "runs on your laptop" \
+            local+ssh "runs on your laptop, reuses this tool's SSH opts" \
+            3>&1 1>&2 2>&3
+    fi
+}
+
 _wt_edit_script_entry() {
     local name="$1" type="$2" path="$3" dir="$4"
     # Whiptail (newt) has no --form widget (that's a dialog(1)-only option —
@@ -1338,7 +1358,7 @@ _wt_edit_script_entry() {
     # as _wt_edit_device elsewhere in this file.
     local new_name new_type new_path new_dir
     new_name=$(whiptail --title "Edit script: $name" --inputbox "Name:" 10 60 "$name" 3>&1 1>&2 2>&3) || return 1
-    new_type=$(whiptail --title "Edit script: $name" --inputbox "Type (remote|local|local+ssh):" 10 60 "$type" 3>&1 1>&2 2>&3) || return 1
+    new_type=$(_wt_pick_script_type "$type") || return 1
     new_path=$(whiptail --title "Edit script: $name" --inputbox "Path:" 10 60 "$path" 3>&1 1>&2 2>&3) || return 1
     new_dir=$(whiptail --title "Edit script: $name" --inputbox "Dir (remote working dir, local+ssh only):" 10 60 "$dir" 3>&1 1>&2 2>&3) || return 1
 
@@ -1363,7 +1383,7 @@ _wt_add_script() {
     # See the comment in _wt_edit_script_entry — whiptail has no --form widget.
     local new_name new_type new_path new_dir
     new_name=$(whiptail --title "Add new script" --inputbox "Name:" 10 60 "" 3>&1 1>&2 2>&3) || return 1
-    new_type=$(whiptail --title "Add new script" --inputbox "Type (remote|local|local+ssh):" 10 60 "local+ssh" 3>&1 1>&2 2>&3) || return 1
+    new_type=$(_wt_pick_script_type "local+ssh") || return 1
     new_path=$(whiptail --title "Add new script" --inputbox "Path:" 10 60 "" 3>&1 1>&2 2>&3) || return 1
     new_dir=$(whiptail --title "Add new script" --inputbox "Dir (remote working dir, local+ssh only):" 10 60 "/tmp" 3>&1 1>&2 2>&3) || return 1
 
@@ -2437,6 +2457,13 @@ case "$1" in
                         exec "$_sc_path" "$@"
                         ;;
                     local+ssh)
+                        # Runs ON YOUR LAPTOP, not the device — the opposite of `remote`.
+                        # S_SSH_OPTS is exported so the script's own ssh/scp calls can reuse
+                        # this tool's ControlMaster/StrictHostKeyChecking settings, and each
+                        # resolved target's IP is passed as --ip so the script knows what to
+                        # reach out to. (Previously this scp'd the script to the device and
+                        # ran it there — identical to `remote` — which defeated the point of
+                        # having two separate types.)
                         [[ -z "$1" ]] && {
                             printf "Usage: s --script %s <nick|@group|--all> [args...]\n" "$_sc_name"; exit 1; }
                         _sc_nick="$1"; shift
@@ -2452,19 +2479,16 @@ case "$1" in
                         done < <(_resolve_targets "$_sc_nick")
                         [[ ${#run_nicks[@]} -eq 0 ]] && { printf "No devices found for: %s\n" "$_sc_nick"; exit 1; }
 
-                        _remote_dir="${_sc_dir:-/tmp}"
+                        export S_SSH_OPTS="${SSH_CTRL_OPTS[*]}"
                         _script_base=$(basename "$_sc_path")
 
                         for i in "${!run_nicks[@]}"; do
                             _load_device_opts "${run_nicks[$i]}"
                             _t=$(_apply_mac_resolution "${run_nicks[$i]}" "${run_targets[$i]}")
                             _ip=$(echo "$_t" | sed -E 's/.*@//' | awk -F: '{print $1}')
-                            
-                            printf "${CYAN}[%s]${RESET} Pushing %s to %s...\n" "${run_nicks[$i]}" "$_script_base" "$_remote_dir"
-                            scp -q "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" "$_sc_path" "$_t:$_remote_dir/$_script_base"
-                            
-                            printf "${CYAN}[%s]${RESET} Executing %s...\n" "${run_nicks[$i]}" "$_script_base"
-                            ssh "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" "$_t" "$_remote_dir/$_script_base" --ip "$_ip" "$@"
+
+                            printf "${CYAN}[%s]${RESET} Running %s locally against %s...\n" "${run_nicks[$i]}" "$_script_base" "$_ip"
+                            "$_sc_path" --ip "$_ip" "$@"
                         done
                         exit 0
                         ;;
