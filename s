@@ -3854,7 +3854,13 @@ case "$1" in
         LAST_TARGET=$(_apply_mac_resolution "$LAST_NICK" "$LAST_TARGET")
 
         if _anim_enabled; then
-            _glitch_line "↩  ${LAST_NICK}  →  ${LAST_TARGET}" "${DIM}${GREEN}"
+            # Same braille spinner + checkmark style as the main connect flow,
+            # instead of the older scramble-decode effect — consistent look
+            # across the tool rather than a one-off animation just for `s -`.
+            _reconn_spin=$(_ora_spin_start "Reconnecting (${LAST_TARGET})")
+            sleep 0.3
+            _ora_spin_stop "$_reconn_spin"
+            _ora_succeed "↩  ${LAST_NICK}  ${DIM}→ ${LAST_TARGET}${RESET}"
         else
             printf "${DIM}↩  %s → %s${RESET}\n" "$LAST_NICK" "$LAST_TARGET"
         fi
