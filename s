@@ -4128,7 +4128,7 @@ case "$1" in
                 fi
             else
                 rm -f "$_pc_err"
-                _anim_enabled && _ora_succeed "Connected"
+                _anim_enabled && _ora_succeed "↩  ${NICK}  ${DIM}→ ${TARGET}${RESET}"
                 # ARP (via _apply_mac_resolution above) found this device at a
                 # different IP than what's stored — persist the correction so
                 # future connects don't need ARP to bail us out again.
