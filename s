@@ -1028,6 +1028,7 @@ _sc_detect_flags() {
 _sc_pick_args_fzf() {
     local -n _sc_out="$1"
     local script_path="$2"
+    local script_name="${3:-$(basename "$script_path")}"
     _fzf_enabled || return 1
 
     local -a flags=()
@@ -1038,8 +1039,8 @@ _sc_pick_args_fzf() {
     local picked
     picked=$(printf '%s\n' "${flags[@]}" \
         | fzf --multi --height=~50% --border=rounded \
-              --prompt="  args → " \
-              --header="  Tab: select multiple | Enter: confirm | Esc: run with no args" \
+              --prompt="  ${script_name} args → " \
+              --header="  Script: ${script_name}  |  Tab: select multiple | Enter: confirm | Esc: run with no args" \
               --color='fg+:bold,gutter:-1')
     [[ -z "$picked" ]] && return 1
 
@@ -1053,7 +1054,7 @@ _sc_pick_args_fzf() {
 
     local flag val
     for flag in "${picked_flags[@]}"; do
-        read -r -p "  ${flag} = " val
+        read -r -p "  [${script_name}] ${flag} (blank if it takes no value) = " val
         _sc_out+=("$flag")
         [[ -n "$val" ]] && _sc_out+=("$val")
     done
@@ -1459,7 +1460,7 @@ _wt_edit_scripts() {
                     # fzf multi-select over the discovered flags, prompting for
                     # a value per flag picked — Esc/nothing picked = run with
                     # no args (see _sc_pick_args_fzf's own header text).
-                    _sc_pick_args_fzf arg_array "$sc_path"
+                    _sc_pick_args_fzf arg_array "$sc_path" "$choice"
                 else
                     local args
                     if [[ -n "$flags" ]]; then
@@ -2449,7 +2450,7 @@ case "$1" in
                     local)
                         if [[ $# -eq 0 ]]; then
                             _sc_args=()
-                            _sc_pick_args_fzf _sc_args "$_sc_path"
+                            _sc_pick_args_fzf _sc_args "$_sc_path" "$_sc_name"
                             set -- "${_sc_args[@]}"
                         fi
                         printf "${CYAN}Running:${RESET} %s %s\n" "$_sc_name" "$*"
@@ -2468,7 +2469,7 @@ case "$1" in
                         _sc_nick="$1"; shift
                         if [[ $# -eq 0 ]]; then
                             _sc_args=()
-                            _sc_pick_args_fzf _sc_args "$_sc_path"
+                            _sc_pick_args_fzf _sc_args "$_sc_path" "$_sc_name"
                             set -- "${_sc_args[@]}"
                         fi
                         _require_mapfile
@@ -2497,7 +2498,7 @@ case "$1" in
                         _sc_nick="$1"; shift
                         if [[ $# -eq 0 ]]; then
                             _sc_args=()
-                            _sc_pick_args_fzf _sc_args "$_sc_path"
+                            _sc_pick_args_fzf _sc_args "$_sc_path" "$_sc_name"
                             set -- "${_sc_args[@]}"
                         fi
                         printf "${CYAN}Running:${RESET} %s on %s %s\n" "$_sc_name" "$_sc_nick" "$*"
