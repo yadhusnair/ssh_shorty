@@ -1117,10 +1117,15 @@ _scr_pick_file() {
 _scr_pull() {
     [[ -z "$SYNC_HOST" ]] && { printf "No SYNC_HOST configured.\n"; return 1; }
     mkdir -p "$SCRIPTS_DIR"
-    ssh "$SYNC_HOST" "mkdir -p '$SCRIPTS_SYNC_REMOTE_DIR'" 2>/dev/null
+    # Same -o BatchMode=yes -o ConnectTimeout=5 every other SYNC_HOST call in
+    # this file uses — without it, a dead host or a key that needs a password
+    # hangs here indefinitely instead of failing fast.
+    local _scr_ssh_opts=(-o BatchMode=yes -o ConnectTimeout=5)
+    ssh "${_scr_ssh_opts[@]}" "$SYNC_HOST" "mkdir -p '$SCRIPTS_SYNC_REMOTE_DIR'" 2>/dev/null
 
     local stage; stage=$(mktemp -d "$CONFIG_DIR/.scr_pull.XXXXXX")
-    rsync -az "${SYNC_HOST}:${SCRIPTS_SYNC_REMOTE_DIR}/" "$stage/" 2>/dev/null
+    rsync -az -e "ssh -o BatchMode=yes -o ConnectTimeout=5" \
+        "${SYNC_HOST}:${SCRIPTS_SYNC_REMOTE_DIR}/" "$stage/" 2>/dev/null
 
     local f name sum base ext n candidate local_sum
     for f in "$stage"/*; do
@@ -1158,14 +1163,15 @@ _scr_pull() {
 # different-content file of the same name either.
 _scr_push() {
     [[ -z "$SYNC_HOST" ]] && { printf "No SYNC_HOST configured.\n"; return 1; }
-    ssh "$SYNC_HOST" "mkdir -p '$SCRIPTS_SYNC_REMOTE_DIR'" 2>/dev/null
+    local _scr_ssh_opts=(-o BatchMode=yes -o ConnectTimeout=5)
+    ssh "${_scr_ssh_opts[@]}" "$SYNC_HOST" "mkdir -p '$SCRIPTS_SYNC_REMOTE_DIR'" 2>/dev/null
 
     local f name sum remote_sum base ext n candidate
     for f in "$@"; do
         [[ -f "$f" ]] || continue
         name=$(basename "$f")
         sum=$(_scr_sum "$f")
-        remote_sum=$(ssh "$SYNC_HOST" "sha256sum '${SCRIPTS_SYNC_REMOTE_DIR}/${name}' 2>/dev/null || md5sum '${SCRIPTS_SYNC_REMOTE_DIR}/${name}' 2>/dev/null" | awk '{print $1}')
+        remote_sum=$(ssh "${_scr_ssh_opts[@]}" "$SYNC_HOST" "sha256sum '${SCRIPTS_SYNC_REMOTE_DIR}/${name}' 2>/dev/null || md5sum '${SCRIPTS_SYNC_REMOTE_DIR}/${name}' 2>/dev/null" | awk '{print $1}')
 
         if [[ -n "$remote_sum" && "$remote_sum" == "$sum" ]]; then
             printf "  ${DIM}already on server${RESET}   %s\n" "$name"
@@ -1179,7 +1185,7 @@ _scr_push() {
             n=2; candidate="${base}.${n}${ext:+.$ext}"
             while :; do
                 local _rs
-                _rs=$(ssh "$SYNC_HOST" "sha256sum '${SCRIPTS_SYNC_REMOTE_DIR}/${candidate}' 2>/dev/null || md5sum '${SCRIPTS_SYNC_REMOTE_DIR}/${candidate}' 2>/dev/null" | awk '{print $1}')
+                _rs=$(ssh "${_scr_ssh_opts[@]}" "$SYNC_HOST" "sha256sum '${SCRIPTS_SYNC_REMOTE_DIR}/${candidate}' 2>/dev/null || md5sum '${SCRIPTS_SYNC_REMOTE_DIR}/${candidate}' 2>/dev/null" | awk '{print $1}')
                 [[ -z "$_rs" ]] && break
                 [[ "$_rs" == "$sum" ]] && { candidate=""; break; }
                 n=$((n+1)); candidate="${base}.${n}${ext:+.$ext}"
@@ -1190,7 +1196,7 @@ _scr_push() {
             continue
         fi
 
-        scp -q "$f" "${SYNC_HOST}:${SCRIPTS_SYNC_REMOTE_DIR}/${candidate}" 2>/dev/null && {
+        scp -q "${_scr_ssh_opts[@]}" "$f" "${SYNC_HOST}:${SCRIPTS_SYNC_REMOTE_DIR}/${candidate}" 2>/dev/null && {
             if [[ "$candidate" == "$name" ]]; then
                 printf "  ${GREEN}pushed${RESET}   %s\n" "$name"
             else
