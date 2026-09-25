@@ -2692,14 +2692,25 @@ case "$1" in
 
                         export S_SSH_OPTS="${SSH_CTRL_OPTS[*]}"
                         _script_base=$(basename "$_sc_path")
+                        # Only auto-inject --ip for scripts that actually declare it (via
+                        # --help) — unconditionally forcing it on every local+ssh script
+                        # broke any script with its own different flags (e.g. --dest),
+                        # since it'd see an --ip it never asked for and never parses.
+                        _sc_wants_ip=0
+                        [[ -x "$_sc_path" ]] && _sc_detect_flags "$_sc_path" | grep -qx -- '--ip' && _sc_wants_ip=1
 
                         for i in "${!run_nicks[@]}"; do
                             _load_device_opts "${run_nicks[$i]}"
                             _t=$(_apply_mac_resolution "${run_nicks[$i]}" "${run_targets[$i]}")
                             _ip=$(echo "$_t" | sed -E 's/.*@//' | awk -F: '{print $1}')
 
-                            printf "${CYAN}[%s]${RESET} Running: %s --ip %s %s\n" "${run_nicks[$i]}" "$_script_base" "$_ip" "$*"
-                            "$_sc_path" --ip "$_ip" "$@"
+                            if (( _sc_wants_ip )); then
+                                printf "${CYAN}[%s]${RESET} Running: %s --ip %s %s\n" "${run_nicks[$i]}" "$_script_base" "$_ip" "$*"
+                                "$_sc_path" --ip "$_ip" "$@"
+                            else
+                                printf "${CYAN}[%s]${RESET} Running: %s %s\n" "${run_nicks[$i]}" "$_script_base" "$*"
+                                "$_sc_path" "$@"
+                            fi
                         done
                         exit 0
                         ;;
