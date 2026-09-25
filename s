@@ -1016,7 +1016,7 @@ _sc_detect_flags() {
     out=$(timeout 2 "$script_path" --help < /dev/null 2>&1)
     [[ -z "$out" ]] && out=$(timeout 2 "$script_path" -h < /dev/null 2>&1)
     [[ -z "$out" ]] && return
-    tr -d '[]<>(),' <<< "$out" | grep -oE -- '--[a-zA-Z][a-zA-Z0-9_-]*' | sort -u
+    tr -d '[]<>(),' <<< "$out" | grep -oE -- '--[a-zA-Z][a-zA-Z0-9_-]*' | sort -u | grep -v -- '^--help$'
 }
 
 # fzf multi-select over a script's auto-detected flags, then prompts for a
@@ -1451,27 +1451,25 @@ _wt_edit_scripts() {
                     [[ -z "$m_pick" ]] && continue
                 fi
                 
-                local out flags=""
-                if [[ -x "$sc_path" ]]; then
-                    out=$(timeout 2 "$sc_path" --help < /dev/null 2>&1)
-                    [[ -z "$out" ]] && out=$(timeout 2 "$sc_path" -h < /dev/null 2>&1)
-                    if [[ -n "$out" ]]; then
-                        flags=$(tr -d '[]<>(),' <<< "$out" | grep -oE -- '--[a-zA-Z][a-zA-Z0-9_-]*' | sort -u | paste -sd ' ' -)
-                    fi
-                fi
-                
-                local args
-                if [[ -n "$flags" ]]; then
-                    args=$(whiptail --title "Arguments" --inputbox "Enter arguments for $choice\n\nDiscovered flags: $flags" 10 70 3>&1 1>&2 2>&3)
+                local flags=""
+                [[ -x "$sc_path" ]] && flags=$(_sc_detect_flags "$sc_path")
+
+                local -a arg_array=()
+                if [[ -n "$flags" ]] && _fzf_enabled; then
+                    # fzf multi-select over the discovered flags, prompting for
+                    # a value per flag picked — Esc/nothing picked = run with
+                    # no args (see _sc_pick_args_fzf's own header text).
+                    _sc_pick_args_fzf arg_array "$sc_path"
                 else
-                    args=$(whiptail --title "Arguments" --inputbox "Enter arguments for $choice (optional):" 10 70 3>&1 1>&2 2>&3)
+                    local args
+                    if [[ -n "$flags" ]]; then
+                        args=$(whiptail --title "Arguments" --inputbox "Enter arguments for $choice\n\nDiscovered flags: $(paste -sd ' ' <<< "$flags")" 10 70 3>&1 1>&2 2>&3) || continue
+                    else
+                        args=$(whiptail --title "Arguments" --inputbox "Enter arguments for $choice (optional):" 10 70 3>&1 1>&2 2>&3) || continue
+                    fi
+                    # Convert string into array respecting basic spaces (quotes won't be evaluated, but it's safe)
+                    read -r -a arg_array <<< "$args"
                 fi
-                
-                # If they cancel the prompt
-                [[ $? -ne 0 ]] && continue
-                
-                # Convert string into array respecting basic spaces (quotes won't be evaluated, but it's safe)
-                read -r -a arg_array <<< "$args"
                 
                 if [[ "$type" == "local" ]]; then
                     exec "$SELF" --script "$choice" "${arg_array[@]}"
