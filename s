@@ -1006,6 +1006,60 @@ _wt_search_and_pick() {
         "${use_items[@]}" 3>&1 1>&2 2>&3
 }
 
+# Auto-detects a registered `s --script`'s own --flags by probing --help/-h
+# (same technique as the flag-completion helpers in completion.zsh/bash —
+# keep all three in sync if this parsing logic ever changes).
+_sc_detect_flags() {
+    local script_path="$1"
+    [[ -x "$script_path" ]] || return
+    local out
+    out=$(timeout 2 "$script_path" --help < /dev/null 2>&1)
+    [[ -z "$out" ]] && out=$(timeout 2 "$script_path" -h < /dev/null 2>&1)
+    [[ -z "$out" ]] && return
+    tr -d '[]<>(),' <<< "$out" | grep -oE -- '--[a-zA-Z][a-zA-Z0-9_-]*' | sort -u
+}
+
+# fzf multi-select over a script's auto-detected flags, then prompts for a
+# value for each one picked, filling the "--flag value" pairs into the
+# nameref array $1. Only called when the user ran the script with no args
+# of their own — anything they already typed/tab-completed is left alone.
+# Returns 1 (array left empty) when fzf isn't available, the script has no
+# detectable flags, or nothing was selected — callers just exec with no args.
+_sc_pick_args_fzf() {
+    local -n _sc_out="$1"
+    local script_path="$2"
+    _fzf_enabled || return 1
+
+    local -a flags=()
+    while IFS= read -r f; do [[ -n "$f" ]] && flags+=("$f"); done \
+        < <(_sc_detect_flags "$script_path")
+    [[ ${#flags[@]} -eq 0 ]] && return 1
+
+    local picked
+    picked=$(printf '%s\n' "${flags[@]}" \
+        | fzf --multi --height=50% --border=rounded \
+              --prompt="  args → " \
+              --header="  Tab: select multiple | Enter: confirm | Esc: run with no args" \
+              --color='fg+:bold,gutter:-1')
+    [[ -z "$picked" ]] && return 1
+
+    # picked_flags is a real array, not a `<<<`-fed while-read loop — the
+    # nested `read -p` below needs the terminal's real stdin, and a
+    # here-string redirection on the loop would steal it out from under
+    # that inner read (same stdin-consumption gotcha as the fleet rename
+    # loop earlier this project — see CLAUDE.md).
+    local -a picked_flags=()
+    while IFS= read -r f; do [[ -n "$f" ]] && picked_flags+=("$f"); done <<< "$picked"
+
+    local flag val
+    for flag in "${picked_flags[@]}"; do
+        read -r -p "  ${flag} = " val
+        _sc_out+=("$flag")
+        [[ -n "$val" ]] && _sc_out+=("$val")
+    done
+    return 0
+}
+
 # ── whiptail menu/form editor for machines.txt ─────────────────────────────────
 # nmtui-style: a plain list you arrow through, Enter to act on one, simple
 # one-field-at-a-time forms (Tab/arrows, OK/Cancel — no keybindings to learn).
@@ -1274,6 +1328,156 @@ _wt_edit_paths() {
 }
 
 # ── whiptail menu/form editor for favorites.txt ────────────────────────────────
+
+_wt_edit_script_entry() {
+    local name="$1" type="$2" path="$3" dir="$4"
+    local form_res
+    form_res=$(whiptail --title "Edit script: $name" --form "" 16 60 4 \
+        "Name:"   1 1 "$name" 1 15 40 0 \
+        "Type:"   2 1 "$type" 2 15 40 0 \
+        "Path:"   3 1 "$path" 3 15 40 0 \
+        "Dir:"    4 1 "$dir"  4 15 40 0 \
+        3>&1 1>&2 2>&3) || return 1
+    
+    local new_name new_type new_path new_dir
+    { read -r new_name; read -r new_type; read -r new_path; read -r new_dir; } <<< "$form_res"
+    
+    if [[ -z "$new_name" || -z "$new_type" || -z "$new_path" ]]; then
+        whiptail --msgbox "Name, Type, and Path are required." 8 50 1>&2
+        return 1
+    fi
+    case "$new_type" in
+        remote|local|local+ssh) ;;
+        *) whiptail --msgbox "Invalid type. Must be: remote, local, or local+ssh." 8 50 1>&2; return 1 ;;
+    esac
+    if [[ "$new_path" != "$path" && ! -f "$new_path" ]]; then
+        whiptail --msgbox "Script not found on disk: $new_path" 8 60 1>&2
+        return 1
+    fi
+    
+    _inplace_edit awk -v n="$name" -v nn="$new_name" -v nt="$new_type" -v np="$new_path" -v nd="$new_dir" \
+        '{ if ($1==n) { print nn, nt, np, nd } else print $0 }' "$SCRIPTS_FILE"
+}
+
+_wt_add_script() {
+    local form_res
+    form_res=$(whiptail --title "Add new script" --form "" 16 60 4 \
+        "Name:"   1 1 "" 1 15 40 0 \
+        "Type:"   2 1 "local+ssh" 2 15 40 0 \
+        "Path:"   3 1 "" 3 15 40 0 \
+        "Dir:"    4 1 "/tmp" 4 15 40 0 \
+        3>&1 1>&2 2>&3) || return 1
+        
+    local new_name new_type new_path new_dir
+    { read -r new_name; read -r new_type; read -r new_path; read -r new_dir; } <<< "$form_res"
+    
+    if [[ -z "$new_name" || -z "$new_type" || -z "$new_path" ]]; then
+        whiptail --msgbox "Name, Type, and Path are required." 8 50 1>&2
+        return 1
+    fi
+    case "$new_type" in
+        remote|local|local+ssh) ;;
+        *) whiptail --msgbox "Invalid type. Must be: remote, local, or local+ssh." 8 50 1>&2; return 1 ;;
+    esac
+    if [[ ! -f "$new_path" ]]; then
+        whiptail --msgbox "Script not found on disk: $new_path" 8 60 1>&2
+        return 1
+    fi
+    
+    if awk -v n="$new_name" '$1==n{f=1;exit}END{exit !f}' "$SCRIPTS_FILE" 2>/dev/null; then
+        whiptail --msgbox "Script '$new_name' already exists." 8 50 1>&2
+        return 1
+    fi
+    
+    printf '%s %s %s %s\n' "$new_name" "$new_type" "$new_path" "$new_dir" >> "$SCRIPTS_FILE"
+}
+
+_wt_delete_script() {
+    local name="$1"
+    whiptail --title "Confirm delete" --yesno "Delete script '$name'?" 8 50 --defaultno || return 1
+    _inplace_edit awk -v n="$name" '$1!=n' "$SCRIPTS_FILE"
+}
+
+_wt_pick_script() {
+    local prompt="$1"
+    local -a items=()
+    while IFS=' ' read -r n t p d; do
+        items+=("$n" "$t | $p")
+    done < <(awk 'NF>=3{print $1, $2, $3, $4}' "$SCRIPTS_FILE")
+    _wt_search_and_pick items "Scripts" "$prompt"
+}
+
+_wt_edit_scripts() {
+    mkdir -p "$CONFIG_DIR"
+    [[ -f "$SCRIPTS_FILE" ]] || touch "$SCRIPTS_FILE"
+    while true; do
+        local action
+        action=$(whiptail --title "Scripts" --menu "Choose an action (Esc to exit)" 15 60 4 \
+            run "Run a script" \
+            edit "Edit a script" \
+            add "Add a script" \
+            delete "Delete a script" \
+            3>&1 1>&2 2>&3) || break
+        case "$action" in
+            run)
+                local choice; choice=$(_wt_pick_script "Select a script to run") || continue
+                local line; line=$(awk -v n="$choice" '$1==n{print;exit}' "$SCRIPTS_FILE")
+                local type; type=$(awk '{print $2}' <<< "$line")
+                local sc_path; sc_path=$(awk '{print $3}' <<< "$line")
+                
+                local m_pick=""
+                if [[ "$type" != "local" ]]; then
+                    _require_mapfile
+                    m_pick=$(awk 'NF >= 2 && $1 !~ /^#/ {print $1, $2}' "$MAPFILE" | \
+                        fzf --ansi --height=50% --border=rounded \
+                        --prompt="  target for $choice → " \
+                        2>/dev/null | awk '{print $1}')
+                    [[ -z "$m_pick" ]] && continue
+                fi
+                
+                local out flags=""
+                if [[ -x "$sc_path" ]]; then
+                    out=$(timeout 2 "$sc_path" --help < /dev/null 2>&1)
+                    [[ -z "$out" ]] && out=$(timeout 2 "$sc_path" -h < /dev/null 2>&1)
+                    if [[ -n "$out" ]]; then
+                        flags=$(tr -d '[]<>(),' <<< "$out" | grep -oE -- '--[a-zA-Z][a-zA-Z0-9_-]*' | sort -u | paste -sd ' ' -)
+                    fi
+                fi
+                
+                local args
+                if [[ -n "$flags" ]]; then
+                    args=$(whiptail --title "Arguments" --inputbox "Enter arguments for $choice\n\nDiscovered flags: $flags" 10 70 3>&1 1>&2 2>&3)
+                else
+                    args=$(whiptail --title "Arguments" --inputbox "Enter arguments for $choice (optional):" 10 70 3>&1 1>&2 2>&3)
+                fi
+                
+                # If they cancel the prompt
+                [[ $? -ne 0 ]] && continue
+                
+                # Convert string into array respecting basic spaces (quotes won't be evaluated, but it's safe)
+                read -r -a arg_array <<< "$args"
+                
+                if [[ "$type" == "local" ]]; then
+                    exec "$SELF" --script "$choice" "${arg_array[@]}"
+                else
+                    exec "$SELF" --script "$choice" "$m_pick" "${arg_array[@]}"
+                fi
+                ;;
+            edit)
+                local choice; choice=$(_wt_pick_script "Select a script to edit") || continue
+                local line; line=$(awk -v n="$choice" '$1==n{print;exit}' "$SCRIPTS_FILE")
+                _wt_edit_script_entry "$choice" $(awk '{print $2, $3, $4}' <<< "$line")
+                ;;
+            add)
+                _wt_add_script
+                ;;
+            delete)
+                local choice; choice=$(_wt_pick_script "Select a script to delete") || continue
+                _wt_delete_script "$choice"
+                ;;
+        esac
+    done
+}
 # Format: <alias> = <command> [#var <name> <before|after>]. COMMAND (and the
 # #var suffix) are taken via bash parameter expansion on the raw line (not awk
 # $0-after-clearing-a-field, which silently mangles internal spaces — see
@@ -2122,8 +2326,8 @@ case "$1" in
         case "$2" in
             add)
                 [[ -z "$3" || -z "$4" || -z "$5" ]] && {
-                    printf "Usage: s --script add <name> <remote|local|local+ssh> <path>\n"; exit 1; }
-                _sc_name="$3"; _sc_type="$4"; _sc_path="$5"
+                    printf "Usage: s --script add <name> <remote|local|local+ssh> <path> [remote_dir]\n"; exit 1; }
+                _sc_name="$3"; _sc_type="$4"; _sc_path="$5"; _sc_dir="$6"
                 case "$_sc_type" in
                     remote|local|local+ssh) ;;
                     *) printf "Invalid type '%s' — expected remote, local, or local+ssh.\n" "$_sc_type"; exit 1 ;;
@@ -2134,8 +2338,8 @@ case "$1" in
                 if awk -v n="$_sc_name" '$1==n{f=1;exit}END{exit !f}' "$SCRIPTS_FILE" 2>/dev/null; then
                     printf "'%s' already registered. Use 's --script remove %s' first.\n" "$_sc_name" "$_sc_name"; exit 1
                 fi
-                printf '%s %s %s\n' "$_sc_name" "$_sc_type" "$_sc_path" >> "$SCRIPTS_FILE"
-                printf "Registered: %s (%s) → %s\n" "$_sc_name" "$_sc_type" "$_sc_path"
+                printf '%s %s %s %s\n' "$_sc_name" "$_sc_type" "$_sc_path" "$_sc_dir" >> "$SCRIPTS_FILE"
+                printf "Registered: %s (%s) → %s (dir: %s)\n" "$_sc_name" "$_sc_type" "$_sc_path" "${_sc_dir:-default}"
                 ;;
             remove)
                 [[ -z "$3" ]] && { printf "Usage: s --script remove <name>\n"; exit 1; }
@@ -2145,17 +2349,77 @@ case "$1" in
                 ;;
             list)
                 if [[ ! -s "$SCRIPTS_FILE" ]]; then
-                    printf "No scripts registered. Add one: s --script add <name> <remote|local|local+ssh> <path>\n"
+                    printf "No scripts registered. Add one: s --script add <name> <remote|local|local+ssh> <path> [remote_dir]\n"
                     exit 0
                 fi
                 printf "${BOLD}  %-20s %-10s %s${RESET}\n" "NAME" "TYPE" "PATH"
-                while read -r _sc_n _sc_t _sc_p; do
+                while read -r _sc_n _sc_t _sc_p _sc_d; do
                     [[ -z "$_sc_n" ]] && continue
-                    printf "  %-20s %-10s %s\n" "$_sc_n" "$_sc_t" "$_sc_p"
+                    if [[ "$_sc_t" == "local+ssh" ]]; then
+                        [[ -z "$_sc_d" ]] && _sc_d="/tmp"
+                        printf "  %-20s %-10s %s (dir: %s)\n" "$_sc_n" "$_sc_t" "$_sc_p" "$_sc_d"
+                    else
+                        printf "  %-20s %-10s %s\n" "$_sc_n" "$_sc_t" "$_sc_p"
+                    fi
                 done < "$SCRIPTS_FILE"
                 ;;
-            "")
-                printf "Usage: s --script add|remove|list|<name> [nick] [args...]\n"; exit 1
+            ""|edit)
+                [[ ! -f "$SCRIPTS_FILE" ]] && touch "$SCRIPTS_FILE"
+                
+                # If they explicitly ask for edit, or if no args are provided.
+                if command -v whiptail &>/dev/null && [[ -t 0 && -t 1 ]]; then
+                    _wt_edit_scripts
+                    exit 0
+                fi
+                
+                # Fallback if no whiptail
+                if [[ "$2" == "edit" ]]; then
+                    ${EDITOR:-nano} "$SCRIPTS_FILE"
+                    exit 0
+                fi
+                
+                if _fzf_enabled; then
+                    if [[ ! -s "$SCRIPTS_FILE" ]]; then
+                        printf "No scripts registered. Add one: s --script add <name> <type> <path>\n"
+                        exit 0
+                    fi
+                    PICK=$(awk '{
+                        if (length($4) > 0) dir=$4; else dir="/tmp";
+                        if ($2 == "local+ssh") printf "%-20s %-10s %s (dir: %s)\n", $1, $2, $3, dir;
+                        else printf "%-20s %-10s %s\n", $1, $2, $3
+                    }' "$SCRIPTS_FILE" | \
+                    fzf --ansi --height=50% --border=rounded \
+                        --prompt="  script → " \
+                        --header="  Enter: run | Ctrl-E: edit scripts.txt | Ctrl-O: edit script file" \
+                        --color='fg+:bold,gutter:-1' \
+                        --bind "ctrl-e:execute(${EDITOR:-nano} $SCRIPTS_FILE)+clear-query" \
+                        --bind "ctrl-o:execute(${EDITOR:-nano} {3})+clear-query" \
+                        2>/dev/null | awk '{print $1}')
+                    [[ -z "$PICK" ]] && exit 0
+
+                    _sc_line=$(awk -v n="$PICK" '$1==n{print;exit}' "$SCRIPTS_FILE" 2>/dev/null)
+                    _sc_type=$(awk '{print $2}' <<< "$_sc_line")
+                    if [[ "$_sc_type" == "local" ]]; then
+                        exec "$SELF" --script "$PICK"
+                    else
+                        _require_mapfile
+                        M_PICK=$(awk 'NF >= 2 && $1 !~ /^#/ {
+                            printf "%-24s  %-30s", $1, $2
+                            for (i=3; i<=NF; i++) if ($i ~ /^#/) printf "  \033[2m%s\033[0m", $i
+                            printf "\n"
+                        }' "$MAPFILE" | \
+                        fzf --ansi --height=50% --border=rounded \
+                            --prompt="  target for $PICK → " \
+                            --color='fg+:bold,gutter:-1' \
+                            2>/dev/null | awk '{print $1}')
+                        [[ -z "$M_PICK" ]] && exit 0
+                        
+                        printf "Running: s --script %s %s\n" "$PICK" "$M_PICK"
+                        exec "$SELF" --script "$PICK" "$M_PICK"
+                    fi
+                else
+                    printf "Usage: s --script add|remove|list|edit|<name> [nick] [args...]\n"; exit 1
+                fi
                 ;;
             *)
                 _sc_name="$2"; shift 2
@@ -2165,22 +2429,58 @@ case "$1" in
                         "$_sc_name" "$_sc_name"; exit 1; }
                 _sc_type=$(awk '{print $2}' <<< "$_sc_line")
                 _sc_path=$(awk '{print $3}' <<< "$_sc_line")
+                _sc_dir=$(awk '{print $4}' <<< "$_sc_line")
                 [[ -f "$_sc_path" ]] || { printf "${RED}Registered script missing on disk: %s${RESET}\n" "$_sc_path"; exit 1; }
                 case "$_sc_type" in
                     local)
+                        if [[ $# -eq 0 ]]; then
+                            _sc_args=()
+                            _sc_pick_args_fzf _sc_args "$_sc_path"
+                            set -- "${_sc_args[@]}"
+                        fi
                         exec "$_sc_path" "$@"
                         ;;
                     local+ssh)
-                        # So a local+ssh script can shell out with the same
-                        # ControlMaster reuse / host-key handling s itself uses,
-                        # instead of reinventing its own ssh options.
-                        export S_SSH_OPTS="${SSH_CTRL_OPTS[*]}"
-                        exec "$_sc_path" "$@"
+                        [[ -z "$1" ]] && {
+                            printf "Usage: s --script %s <nick|@group|--all> [args...]\n" "$_sc_name"; exit 1; }
+                        _sc_nick="$1"; shift
+                        if [[ $# -eq 0 ]]; then
+                            _sc_args=()
+                            _sc_pick_args_fzf _sc_args "$_sc_path"
+                            set -- "${_sc_args[@]}"
+                        fi
+                        _require_mapfile
+                        run_nicks=(); run_targets=()
+                        while IFS=' ' read -r nick target; do
+                            run_nicks+=("$nick"); run_targets+=("$target")
+                        done < <(_resolve_targets "$_sc_nick")
+                        [[ ${#run_nicks[@]} -eq 0 ]] && { printf "No devices found for: %s\n" "$_sc_nick"; exit 1; }
+
+                        _remote_dir="${_sc_dir:-/tmp}"
+                        _script_base=$(basename "$_sc_path")
+
+                        for i in "${!run_nicks[@]}"; do
+                            _load_device_opts "${run_nicks[$i]}"
+                            _t=$(_apply_mac_resolution "${run_nicks[$i]}" "${run_targets[$i]}")
+                            _ip=$(echo "$_t" | sed -E 's/.*@//' | awk -F: '{print $1}')
+                            
+                            printf "${CYAN}[%s]${RESET} Pushing %s to %s...\n" "${run_nicks[$i]}" "$_script_base" "$_remote_dir"
+                            scp -q "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" "$_sc_path" "$_t:$_remote_dir/$_script_base"
+                            
+                            printf "${CYAN}[%s]${RESET} Executing %s...\n" "${run_nicks[$i]}" "$_script_base"
+                            ssh "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" "$_t" "$_remote_dir/$_script_base" --ip "$_ip" "$@"
+                        done
+                        exit 0
                         ;;
                     remote)
                         [[ -z "$1" ]] && {
                             printf "Usage: s --script %s <nick|@group|--all> [args...]\n" "$_sc_name"; exit 1; }
                         _sc_nick="$1"; shift
+                        if [[ $# -eq 0 ]]; then
+                            _sc_args=()
+                            _sc_pick_args_fzf _sc_args "$_sc_path"
+                            set -- "${_sc_args[@]}"
+                        fi
                         exec "$SELF" --run-script "$_sc_nick" "$_sc_path" "$@"
                         ;;
                 esac
