@@ -1967,24 +1967,49 @@ _request_access() {
 # memory before install.sh replaces the running script on disk.
 _do_update() {
     local remote_ver="$1"
-    printf "Downloading v%s...\n" "$remote_ver"
+    if _anim_enabled; then
+        _matrix_header "UPDATING → v${remote_ver}"
+    else
+        printf "Downloading v%s...\n" "$remote_ver"
+    fi
     # Run the exact same published install command (README's curl one-liner)
     # rather than a separate, bespoke tarball-download path — install.sh
     # already self-fetches the full repo when piped like this (no sibling
     # files on disk to find), so this stays cross-platform (its own
     # ensure_bash4/zsh-detection/offer_fzf logic runs) and can never drift
     # from what a fresh install actually does.
+    #
+    # Its output is left streaming live rather than hidden behind a spinner —
+    # offer_fzf can shell out to `sudo apt-get install`, which may need an
+    # interactive password prompt; swallowing that behind a spinner would
+    # just look like a hang.
     if ! curl -fsSL --max-time 60 \
             "https://raw.githubusercontent.com/yadhusnair/ssh_shorty/main/install.sh" \
             | bash -s -- --update; then
-        printf "Update failed.\n"; return 1
+        if _anim_enabled; then
+            _ora_fail "Update failed."
+        else
+            printf "Update failed.\n"
+        fi
+        return 1
     fi
-    # Sync favorites before handing off
+    # Sync favorites before handing off — a plain scp with no prompt risk, so
+    # this one's safe to spin.
     if [[ -n "$SYNC_HOST" ]]; then
-        scp -q -o BatchMode=yes -o ConnectTimeout=5 \
-            "${SYNC_HOST}:${FAVS_SYNC_REMOTE_PATH}" "$FAVS_FILE" 2>/dev/null \
-            && printf "  ${GREEN}✓${RESET} favorites synced from %s\n" "$SYNC_HOST" \
-            || true
+        if _anim_enabled; then
+            _fav_spin=$(_ora_spin_start "Syncing favorites from ${SYNC_HOST}...")
+        fi
+        if scp -q -o BatchMode=yes -o ConnectTimeout=5 \
+                "${SYNC_HOST}:${FAVS_SYNC_REMOTE_PATH}" "$FAVS_FILE" 2>/dev/null; then
+            if _anim_enabled; then
+                _ora_spin_stop "$_fav_spin"
+                _ora_succeed "Favorites synced from ${SYNC_HOST}"
+            else
+                printf "  ${GREEN}✓${RESET} favorites synced from %s\n" "$SYNC_HOST"
+            fi
+        else
+            [[ -n "${_fav_spin:-}" ]] && _ora_spin_stop "$_fav_spin"
+        fi
     fi
     # exec into the newly installed script to print the success message and exit.
     # This replaces this process entirely so bash never reads ;; or esac from the
@@ -3838,13 +3863,27 @@ case "$1" in
 
     --update)
         command -v curl &>/dev/null || { printf "curl is required for updates.\n"; exit 1; }
-        printf "Checking for updates (current: %s)...\n" "$VERSION"
+        if _anim_enabled; then
+            _upd_spin=$(_ora_spin_start "Checking for updates (current: v${VERSION})")
+        else
+            printf "Checking for updates (current: %s)...\n" "$VERSION"
+        fi
         remote_ver=$(curl -fsSL --max-time 8 "$REPO_RAW/VERSION" 2>/dev/null | tr -d '[:space:]')
+        [[ -n "${_upd_spin:-}" ]] && _ora_spin_stop "$_upd_spin"
         if [[ -z "$remote_ver" ]]; then
-            printf "Could not reach update server. Check your connection.\n"; exit 1
+            if _anim_enabled; then
+                _ora_fail "Could not reach update server. Check your connection."
+            else
+                printf "Could not reach update server. Check your connection.\n"
+            fi
+            exit 1
         fi
         if [[ "$remote_ver" == "$VERSION" || ! "$remote_ver" > "$VERSION" ]]; then
-            printf "Already up to date (v%s).\n" "$VERSION"
+            if _anim_enabled; then
+                _ora_succeed "Already up to date (v${VERSION})"
+            else
+                printf "Already up to date (v%s).\n" "$VERSION"
+            fi
             printf '%s %s\n' "$(date +%s)" "$remote_ver" > "$UPDATE_CACHE"
             exit 0
         fi
@@ -3889,7 +3928,13 @@ case "$1" in
         _fuver="$2"
         [[ -n "$_fuver" ]] && {
             printf '%s %s\n' "$(date +%s)" "$_fuver" > "$UPDATE_CACHE"
-            printf "\n${GREEN}✓ Updated to v%s${RESET} — open a new shell tab to activate new completions\n" "$_fuver"
+            printf "\n"
+            if _anim_enabled; then
+                _glitch_line "✓ Updated to v${_fuver}" "${BOLD}${GREEN}"
+            else
+                printf "${GREEN}✓ Updated to v%s${RESET}\n" "$_fuver"
+            fi
+            printf "Open a new shell tab to activate new completions.\n"
         }
         exit 0
         ;;
