@@ -393,7 +393,7 @@ _ssh_shorty_complete() {
                 if [[ "$cword" -eq 2 ]]; then
                     local -a script_names
                     mapfile -t script_names < <(_get_script_names)
-                    COMPREPLY=( $(compgen -W "add remove list ${script_names[*]}" -- "$cur") )
+                    COMPREPLY=( $(compgen -W "add remove list edit sync ${script_names[*]}" -- "$cur") )
                 elif [[ "${COMP_WORDS[2]}" == "add" ]]; then
                     if [[ "$cword" -eq 4 ]]; then
                         COMPREPLY=( $(compgen -W "remote local local+ssh" -- "$cur") )
@@ -407,10 +407,12 @@ _ssh_shorty_complete() {
                         mapfile -t script_names < <(_get_script_names)
                         COMPREPLY=( $(compgen -W "${script_names[*]}" -- "$cur") )
                     fi
-                elif [[ "${COMP_WORDS[2]}" != "list" ]]; then
+                elif [[ "${COMP_WORDS[2]}" == "list" || "${COMP_WORDS[2]}" == "sync" ]]; then
+                    :
+                else
                     local _sc_type _sc_path
                     read -r _sc_type _sc_path < <(_get_script_type_path "${COMP_WORDS[2]}")
-                    if [[ "$_sc_type" == "remote" ]]; then
+                    if [[ "$_sc_type" == "remote" || "$_sc_type" == "local+ssh" ]]; then
                         if [[ "$cword" -eq 3 ]]; then
                             COMPREPLY=( $(compgen -W "${machines[*]}" -- "$cur") )
                         elif [[ "$cword" -ge 4 ]]; then

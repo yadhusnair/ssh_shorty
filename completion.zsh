@@ -405,7 +405,7 @@ _ssh_shorty() {
         ;;
       --script)
         if (( CURRENT == 3 )); then
-          compadd -- add remove list
+          compadd -- add remove list edit sync
           _script_names
         elif [[ "${words[3]}" == "add" ]]; then
           if (( CURRENT == 5 )); then
@@ -415,11 +415,13 @@ _ssh_shorty() {
           fi
         elif [[ "${words[3]}" == "remove" ]]; then
           (( CURRENT == 4 )) && _script_names
-        elif [[ "${words[3]}" != "list" ]]; then
+        elif [[ "${words[3]}" == "list" || "${words[3]}" == "sync" ]]; then
+          :
+        else
           local -a reply
           _script_lookup "${words[3]}"
           local _sc_type="${reply[1]}" _sc_path="${reply[2]}"
-          if [[ "$_sc_type" == "remote" ]]; then
+          if [[ "$_sc_type" == "remote" || "$_sc_type" == "local+ssh" ]]; then
             if (( CURRENT == 4 )); then
               _describe 'machine' machines
             elif (( CURRENT >= 5 )); then

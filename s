@@ -9,6 +9,7 @@ PATHS_FILE="$HOME/.config/ssh_shorty/machine-paths.txt"
 CONFIG_DIR="$HOME/.config/ssh_shorty"
 FAVS_FILE="$CONFIG_DIR/favorites.txt"
 SCRIPTS_FILE="$CONFIG_DIR/scripts.txt"
+SCRIPTS_DIR="$CONFIG_DIR/scripts"
 HISTORY_DIR="$HOME/.local/share/ssh_shorty"
 HISTORY_FILE="$HISTORY_DIR/history"
 CACHE_DIR="$HOME/.cache/ssh_shorty"
@@ -23,6 +24,7 @@ SYNC_REMOTE_PATH="validation/machines.txt"
 PATHS_SYNC_REMOTE_PATH="${SYNC_REMOTE_PATH%/*}/machine-paths.txt"
 FAVS_SYNC_REMOTE_PATH="${SYNC_REMOTE_PATH%/*}/favorites.txt"
 USERS_SYNC_REMOTE_PATH="${SYNC_REMOTE_PATH%/*}/users.txt"
+SCRIPTS_SYNC_REMOTE_DIR="${SYNC_REMOTE_PATH%/*}/ssh_shorty_scripts"
 
 # User identity for fleet logs — set SHORTY_USER in config, defaults to $USER
 SHORTY_USER="${SHORTY_USER:-$USER}"
@@ -422,9 +424,10 @@ usage() {
     printf "  s --watch [prefix|@group]                   live-refreshing fleet status\n"
     printf "  s --run <cmd> <nick|@group|--all>           run command on device(s)\n"
     printf "  s --run-script <nick|@group> <file>         run local script remotely\n"
-    printf "  s --script add <name> <remote|local|local+ssh> <path>   register a script\n"
+    printf "  s --script add <name> <remote|local|local+ssh> [path]   register a script\n"
     printf "  s --script <name> [nick] [args...]          run a registered script\n"
     printf "  s --script list | remove <name>             list/remove registered scripts\n"
+    printf "  s --script sync                             push/pull shared scripts w/ server\n"
     printf "  s --tail <nick> <alias|/path>               tail a remote file\n"
     printf "  s --tunnel <nick> [local_port:]remote_port  open SSH tunnel\n"
     printf "  s --close <nick|@group|--all>               close ControlMaster socket\n"
@@ -1061,6 +1064,173 @@ _sc_pick_args_fzf() {
     return 0
 }
 
+# ── shared scripts/ folder (SCRIPTS_DIR) + sync with the team's SYNC_HOST ──────
+# Scripts you register with `s --script add` live wherever you point Path at,
+# but the *shared* ones (the ones everyone should be able to find and register)
+# live in this one folder, next to machines.txt. `s --script sync` pushes/pulls
+# this folder's contents to/from SYNC_HOST — it never touches scripts.txt, so
+# each person still runs their own `add` (picking from this folder via fzf) to
+# decide their own type/dir for a script that showed up here.
+
+_scr_sum() {
+    [[ -f "$1" ]] || return
+    if command -v sha256sum &>/dev/null; then sha256sum "$1" | awk '{print $1}'
+    else md5sum "$1" | awk '{print $1}'
+    fi
+}
+
+# Picks an fzf/whiptail file from SCRIPTS_DIR — used by _wt_add_script and
+# _wt_edit_script_entry instead of free-typing a Path. Echoes the full path,
+# or returns 1 (with a message) if the folder is empty.
+_scr_pick_file() {
+    mkdir -p "$SCRIPTS_DIR"
+    local -a files=()
+    while IFS= read -r f; do files+=("$f"); done \
+        < <(find "$SCRIPTS_DIR" -maxdepth 1 -type f -printf '%f\n' 2>/dev/null | sort)
+    if [[ ${#files[@]} -eq 0 ]]; then
+        whiptail --msgbox "No scripts in $SCRIPTS_DIR yet.\n\nPut a script there first (or pull shared ones with the 'sync' action)." 10 70 1>&2
+        return 1
+    fi
+
+    local choice
+    if _fzf_enabled; then
+        choice=$(printf '%s\n' "${files[@]}" \
+            | fzf --height=~50% --border=rounded --prompt="  script file → " \
+                  --header="  Pick a file from $SCRIPTS_DIR" \
+                  --color='fg+:bold,gutter:-1')
+    else
+        local -a items=()
+        local f; for f in "${files[@]}"; do items+=("$f" ""); done
+        choice=$(whiptail --title "Scripts folder" --menu "Pick a file from $SCRIPTS_DIR" 20 70 10 \
+            "${items[@]}" 3>&1 1>&2 2>&3)
+    fi
+    [[ -z "$choice" ]] && return 1
+    printf '%s' "$SCRIPTS_DIR/$choice"
+}
+
+# Pulls every file from SYNC_HOST's shared scripts dir into SCRIPTS_DIR. A
+# same-named file that already exists locally with DIFFERENT content is never
+# overwritten — the incoming one is saved as name.2.ext (name.3.ext, ...)
+# instead, so somebody else's push can never silently clobber your local
+# edits. Same name + same content (checksum match, at any suffix) is treated
+# as "already have it" and skipped entirely — not a conflict.
+_scr_pull() {
+    [[ -z "$SYNC_HOST" ]] && { printf "No SYNC_HOST configured.\n"; return 1; }
+    mkdir -p "$SCRIPTS_DIR"
+    ssh "$SYNC_HOST" "mkdir -p '$SCRIPTS_SYNC_REMOTE_DIR'" 2>/dev/null
+
+    local stage; stage=$(mktemp -d "$CONFIG_DIR/.scr_pull.XXXXXX")
+    rsync -az "${SYNC_HOST}:${SCRIPTS_SYNC_REMOTE_DIR}/" "$stage/" 2>/dev/null
+
+    local f name sum base ext n candidate local_sum
+    for f in "$stage"/*; do
+        [[ -f "$f" ]] || continue
+        name=$(basename "$f")
+        sum=$(_scr_sum "$f")
+
+        if [[ ! -f "$SCRIPTS_DIR/$name" ]]; then
+            cp "$f" "$SCRIPTS_DIR/$name"; chmod +x "$SCRIPTS_DIR/$name" 2>/dev/null
+            printf "  ${GREEN}pulled${RESET}   %s\n" "$name"
+            continue
+        fi
+
+        local_sum=$(_scr_sum "$SCRIPTS_DIR/$name")
+        [[ "$sum" == "$local_sum" ]] && continue
+
+        base="${name%.*}"; ext="${name##*.}"
+        [[ "$base" == "$ext" ]] && ext=""
+        n=2; candidate="${base}.${n}${ext:+.$ext}"
+        while [[ -f "$SCRIPTS_DIR/$candidate" ]]; do
+            [[ "$(_scr_sum "$SCRIPTS_DIR/$candidate")" == "$sum" ]] && { candidate=""; break; }
+            n=$((n+1)); candidate="${base}.${n}${ext:+.$ext}"
+        done
+        [[ -z "$candidate" ]] && continue
+
+        cp "$f" "$SCRIPTS_DIR/$candidate"; chmod +x "$SCRIPTS_DIR/$candidate" 2>/dev/null
+        printf "  ${YELLOW}pulled (renamed — differs from your %s)${RESET}   %s\n" "$name" "$candidate"
+    done
+    rm -rf "$stage"
+}
+
+# Pushes the given local files (full paths) to SYNC_HOST's shared scripts
+# dir. Same rename-on-conflict rule as _scr_pull, checked against the
+# remote's checksum before pushing, so you can never clobber someone else's
+# different-content file of the same name either.
+_scr_push() {
+    [[ -z "$SYNC_HOST" ]] && { printf "No SYNC_HOST configured.\n"; return 1; }
+    ssh "$SYNC_HOST" "mkdir -p '$SCRIPTS_SYNC_REMOTE_DIR'" 2>/dev/null
+
+    local f name sum remote_sum base ext n candidate
+    for f in "$@"; do
+        [[ -f "$f" ]] || continue
+        name=$(basename "$f")
+        sum=$(_scr_sum "$f")
+        remote_sum=$(ssh "$SYNC_HOST" "sha256sum '${SCRIPTS_SYNC_REMOTE_DIR}/${name}' 2>/dev/null || md5sum '${SCRIPTS_SYNC_REMOTE_DIR}/${name}' 2>/dev/null" | awk '{print $1}')
+
+        if [[ -n "$remote_sum" && "$remote_sum" == "$sum" ]]; then
+            printf "  ${DIM}already on server${RESET}   %s\n" "$name"
+            continue
+        fi
+
+        candidate="$name"
+        if [[ -n "$remote_sum" && "$remote_sum" != "$sum" ]]; then
+            base="${name%.*}"; ext="${name##*.}"
+            [[ "$base" == "$ext" ]] && ext=""
+            n=2; candidate="${base}.${n}${ext:+.$ext}"
+            while :; do
+                local _rs
+                _rs=$(ssh "$SYNC_HOST" "sha256sum '${SCRIPTS_SYNC_REMOTE_DIR}/${candidate}' 2>/dev/null || md5sum '${SCRIPTS_SYNC_REMOTE_DIR}/${candidate}' 2>/dev/null" | awk '{print $1}')
+                [[ -z "$_rs" ]] && break
+                [[ "$_rs" == "$sum" ]] && { candidate=""; break; }
+                n=$((n+1)); candidate="${base}.${n}${ext:+.$ext}"
+            done
+        fi
+        if [[ -z "$candidate" ]]; then
+            printf "  ${DIM}already on server${RESET}   %s\n" "$name"
+            continue
+        fi
+
+        scp -q "$f" "${SYNC_HOST}:${SCRIPTS_SYNC_REMOTE_DIR}/${candidate}" 2>/dev/null && {
+            if [[ "$candidate" == "$name" ]]; then
+                printf "  ${GREEN}pushed${RESET}   %s\n" "$name"
+            else
+                printf "  ${YELLOW}pushed (renamed — differs from server's %s)${RESET}   %s\n" "$name" "$candidate"
+            fi
+        }
+    done
+}
+
+# `s --script sync`: pulls everything new automatically, then lets you
+# fzf multi-select which of your local scripts (if any) to push up.
+_scr_sync() {
+    [[ -z "$SYNC_HOST" ]] && { printf "No SYNC_HOST configured — set it in %s (SYNC_HOST=\"user@host\").\n" "$CONFIG_DIR/config"; return 1; }
+    mkdir -p "$SCRIPTS_DIR"
+    printf "${CYAN}Pulling shared scripts...${RESET}\n"
+    _scr_pull
+
+    local -a local_files=()
+    while IFS= read -r f; do local_files+=("$f"); done \
+        < <(find "$SCRIPTS_DIR" -maxdepth 1 -type f -printf '%f\n' 2>/dev/null | sort)
+    [[ ${#local_files[@]} -eq 0 ]] && { printf "Nothing in %s to push.\n" "$SCRIPTS_DIR"; return 0; }
+
+    local -a picked=()
+    if _fzf_enabled; then
+        local sel
+        sel=$(printf '%s\n' "${local_files[@]}" \
+            | fzf --multi --height=~50% --border=rounded --prompt="  push → " \
+                  --header="  Tab: select multiple | Enter: push selected | Esc: push nothing" \
+                  --color='fg+:bold,gutter:-1')
+        [[ -z "$sel" ]] && { printf "Nothing selected to push.\n"; return 0; }
+        while IFS= read -r f; do [[ -n "$f" ]] && picked+=("$SCRIPTS_DIR/$f"); done <<< "$sel"
+    else
+        printf "fzf not installed — pushing everything in %s.\n" "$SCRIPTS_DIR"
+        local f; for f in "${local_files[@]}"; do picked+=("$SCRIPTS_DIR/$f"); done
+    fi
+
+    printf "${CYAN}Pushing selected scripts...${RESET}\n"
+    _scr_push "${picked[@]}"
+}
+
 # ── whiptail menu/form editor for machines.txt ─────────────────────────────────
 # nmtui-style: a plain list you arrow through, Enter to act on one, simple
 # one-field-at-a-time forms (Tab/arrows, OK/Cancel — no keybindings to learn).
@@ -1360,7 +1530,7 @@ _wt_edit_script_entry() {
     local new_name new_type new_path new_dir
     new_name=$(whiptail --title "Edit script: $name" --inputbox "Name:" 10 60 "$name" 3>&1 1>&2 2>&3) || return 1
     new_type=$(_wt_pick_script_type "$type") || return 1
-    new_path=$(whiptail --title "Edit script: $name" --inputbox "Path:" 10 60 "$path" 3>&1 1>&2 2>&3) || return 1
+    new_path=$(_scr_pick_file) || return 1
     new_dir=$(whiptail --title "Edit script: $name" --inputbox "Dir (remote working dir, local+ssh only):" 10 60 "$dir" 3>&1 1>&2 2>&3) || return 1
 
     if [[ -z "$new_name" || -z "$new_type" || -z "$new_path" ]]; then
@@ -1385,7 +1555,7 @@ _wt_add_script() {
     local new_name new_type new_path new_dir
     new_name=$(whiptail --title "Add new script" --inputbox "Name:" 10 60 "" 3>&1 1>&2 2>&3) || return 1
     new_type=$(_wt_pick_script_type "local+ssh") || return 1
-    new_path=$(whiptail --title "Add new script" --inputbox "Path:" 10 60 "" 3>&1 1>&2 2>&3) || return 1
+    new_path=$(_scr_pick_file) || return 1
     new_dir=$(whiptail --title "Add new script" --inputbox "Dir (remote working dir, local+ssh only):" 10 60 "/tmp" 3>&1 1>&2 2>&3) || return 1
 
     if [[ -z "$new_name" || -z "$new_type" || -z "$new_path" ]]; then
@@ -1429,11 +1599,12 @@ _wt_edit_scripts() {
     [[ -f "$SCRIPTS_FILE" ]] || touch "$SCRIPTS_FILE"
     while true; do
         local action
-        action=$(whiptail --title "Scripts" --menu "Choose an action (Esc to exit)" 15 60 4 \
+        action=$(whiptail --title "Scripts" --menu "Choose an action (Esc to exit)" 16 60 5 \
             run "Run a script" \
             edit "Edit a script" \
             add "Add a script" \
             delete "Delete a script" \
+            sync "Push/pull shared scripts with the server" \
             3>&1 1>&2 2>&3) || break
         case "$action" in
             run)
@@ -1489,6 +1660,10 @@ _wt_edit_scripts() {
             delete)
                 local choice; choice=$(_wt_pick_script "Select a script to delete") || continue
                 _wt_delete_script "$choice"
+                ;;
+            sync)
+                _scr_sync
+                read -n1 -r -p $'\nPress any key to continue...' _
                 ;;
         esac
     done
@@ -2340,9 +2515,12 @@ case "$1" in
     --script)
         case "$2" in
             add)
-                [[ -z "$3" || -z "$4" || -z "$5" ]] && {
-                    printf "Usage: s --script add <name> <remote|local|local+ssh> <path> [remote_dir]\n"; exit 1; }
+                [[ -z "$3" || -z "$4" ]] && {
+                    printf "Usage: s --script add <name> <remote|local|local+ssh> [path] [remote_dir]\n"; exit 1; }
                 _sc_name="$3"; _sc_type="$4"; _sc_path="$5"; _sc_dir="$6"
+                if [[ -z "$_sc_path" ]]; then
+                    _sc_path=$(_scr_pick_file) || { printf "No script picked.\n"; exit 1; }
+                fi
                 case "$_sc_type" in
                     remote|local|local+ssh) ;;
                     *) printf "Invalid type '%s' — expected remote, local, or local+ssh.\n" "$_sc_type"; exit 1 ;;
@@ -2377,6 +2555,9 @@ case "$1" in
                         printf "  %-20s %-10s %s\n" "$_sc_n" "$_sc_t" "$_sc_p"
                     fi
                 done < "$SCRIPTS_FILE"
+                ;;
+            sync)
+                _scr_sync
                 ;;
             ""|edit)
                 [[ ! -f "$SCRIPTS_FILE" ]] && touch "$SCRIPTS_FILE"
@@ -2433,7 +2614,7 @@ case "$1" in
                         exec "$SELF" --script "$PICK" "$M_PICK"
                     fi
                 else
-                    printf "Usage: s --script add|remove|list|edit|<name> [nick] [args...]\n"; exit 1
+                    printf "Usage: s --script add|remove|list|edit|sync|<name> [nick] [args...]\n"; exit 1
                 fi
                 ;;
             *)
