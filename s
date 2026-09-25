@@ -445,6 +445,7 @@ usage() {
     printf "  s --remove <nickname>                       remove a device\n"
     printf "  s --tag <nickname> <tag>                    add a tag to a device (# auto-added)\n"
     printf "  s --untag <nickname> <tag>                  remove a tag from a device\n"
+    printf "  s --set-host                                configure SYNC_HOST (creates its folder)\n"
     printf "  s --sync                                    pull/push fleet from SYNC_HOST\n"
     printf "  s --ping <nick|@group|prefix|--all>         check reachability\n"
     printf "  s --oneshot                                 fleet-wide MAC/IP reconciliation\n"
@@ -3170,6 +3171,100 @@ case "$1" in
             '$1 == n { gsub(" "t,""); gsub(t" ","") } { print }' "$MAPFILE"
         printf "Untagged: %s removed %s\n" "$NICK" "$TAG"
         _sync_push
+        ;;
+
+    --set-host)
+        # Configures SYNC_HOST from scratch: asks for the host, optionally a
+        # sudo password (only held in memory for this one setup command,
+        # never written to disk), and where the shared folder should live on
+        # that host (default ~/ssh_shorty, or a custom path) — then actually
+        # ssh's in and creates it before saving anything, so a bad host/path
+        # never gets written to config.
+        _sh_use_wt=0
+        command -v whiptail &>/dev/null && [[ -t 0 && -t 1 ]] && _sh_use_wt=1
+        _sh_sudo_pass=""
+
+        if (( _sh_use_wt )); then
+            _sh_host=$(whiptail --title "Set sync host" --inputbox "SSH host to sync with (user@hostname):" 10 60 "${SYNC_HOST}" 3>&1 1>&2 2>&3) || exit 1
+            [[ -z "$_sh_host" ]] && { printf "Empty host — aborted.\n"; exit 1; }
+
+            if whiptail --title "Sudo" --yesno "Does creating the shared folder on this host need sudo?" 8 60; then
+                _sh_sudo_pass=$(whiptail --title "Sudo password" --passwordbox "Sudo password for $_sh_host (not stored, used once for setup):" 10 60 3>&1 1>&2 2>&3) || exit 1
+            fi
+
+            _sh_path_choice=$(whiptail --title "Shared folder location" --menu "Where should the shared ssh_shorty folder live on $_sh_host?" 13 70 2 \
+                default "~/ssh_shorty (recommended)" \
+                custom  "Enter a custom path" \
+                3>&1 1>&2 2>&3) || exit 1
+            if [[ "$_sh_path_choice" == "custom" ]]; then
+                _sh_remote_dir=$(whiptail --title "Custom path" --inputbox "Path on $_sh_host for the shared folder (relative to home, or absolute):" 10 70 "" 3>&1 1>&2 2>&3) || exit 1
+                [[ -z "$_sh_remote_dir" ]] && { printf "Empty path — aborted.\n"; exit 1; }
+            else
+                _sh_remote_dir="ssh_shorty"
+            fi
+        else
+            printf "SSH host to sync with (user@hostname): "
+            read -r _sh_host
+            [[ -z "$_sh_host" ]] && { printf "Empty host — aborted.\n"; exit 1; }
+
+            printf "Does creating the shared folder need sudo on this host? [y/N] "
+            read -r _sh_sudo_resp
+            if [[ "${_sh_sudo_resp,,}" == "y" ]]; then
+                printf "Sudo password for %s (not stored, used once for setup): " "$_sh_host"
+                read -rs _sh_sudo_pass
+                printf "\n"
+            fi
+
+            printf "Shared folder location on %s — [D]efault (~/ssh_shorty) or [C]ustom path? [D/c] " "$_sh_host"
+            read -r _sh_path_resp
+            if [[ "${_sh_path_resp,,}" == "c" ]]; then
+                printf "Path (relative to home, or absolute): "
+                read -r _sh_remote_dir
+                [[ -z "$_sh_remote_dir" ]] && { printf "Empty path — aborted.\n"; exit 1; }
+            else
+                _sh_remote_dir="ssh_shorty"
+            fi
+        fi
+
+        printf "Creating %s on %s...\n" "$_sh_remote_dir" "$_sh_host"
+        _sh_ok=1
+        if [[ -n "$_sh_sudo_pass" ]]; then
+            # chown target must be the UNPRIVILEGED remote user, not whatever
+            # `whoami` reports from inside the sudo'd command (that's root,
+            # making the chown a no-op and leaving the folder unwritable by
+            # the account s itself connects as for every future push).
+            _sh_remote_user="${_sh_host%%@*}"
+            [[ "$_sh_remote_user" == "$_sh_host" ]] && \
+                _sh_remote_user=$(ssh -o BatchMode=yes -o ConnectTimeout=10 "$_sh_host" whoami 2>/dev/null)
+            ssh -o BatchMode=yes -o ConnectTimeout=10 "$_sh_host" \
+                "sudo -S bash -c \"mkdir -p '$_sh_remote_dir' && chown '$_sh_remote_user' '$_sh_remote_dir'\"" \
+                <<< "$_sh_sudo_pass" 2>/dev/null || _sh_ok=0
+        else
+            ssh -o BatchMode=yes -o ConnectTimeout=10 "$_sh_host" \
+                "mkdir -p '$_sh_remote_dir'" 2>/dev/null || _sh_ok=0
+        fi
+        unset _sh_sudo_pass
+
+        if [[ "$_sh_ok" -ne 1 ]]; then
+            printf "${RED}Failed to create %s on %s.${RESET} Check connectivity/permissions and try again.\n" "$_sh_remote_dir" "$_sh_host"
+            exit 1
+        fi
+
+        mkdir -p "$CONFIG_DIR"
+        if [[ -f "$CONFIG_DIR/config" ]]; then
+            grep -v '^SYNC_HOST=\|^SYNC_REMOTE_PATH=' "$CONFIG_DIR/config" > "$CONFIG_DIR/.config.tmp" 2>/dev/null
+            mv "$CONFIG_DIR/.config.tmp" "$CONFIG_DIR/config"
+        fi
+        {
+            printf 'SYNC_HOST="%s"\n' "$_sh_host"
+            printf 'SYNC_REMOTE_PATH="%s/machines.txt"\n' "$_sh_remote_dir"
+        } >> "$CONFIG_DIR/config"
+
+        SYNC_HOST="$_sh_host"
+        SYNC_REMOTE_PATH="${_sh_remote_dir}/machines.txt"
+
+        printf "${GREEN}Saved.${RESET} SYNC_HOST=%s  SYNC_REMOTE_PATH=%s\n" "$SYNC_HOST" "$SYNC_REMOTE_PATH"
+        printf "Run 's --sync' to start syncing your fleet.\n"
         ;;
 
     --sync)

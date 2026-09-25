@@ -39,6 +39,7 @@ _ssh_shorty() {
     '--remove:remove a device'
     '--tag:add a tag to a device'
     '--untag:remove a tag from a device'
+    '--set-host:configure SYNC_HOST (creates its folder)'
     '--sync:pull/push fleet from SYNC_HOST'
     '--ping:check reachability'
     '--oneshot:fleet-wide MAC/IP reconciliation'
