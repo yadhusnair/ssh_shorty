@@ -1558,7 +1558,11 @@ _wt_edit_script_entry() {
         return 1
     fi
     
-    _inplace_edit awk -v n="$name" -v nn="$new_name" -v nt="$new_type" -v np="$new_path" -v nd="$new_dir" \
+    # _inplace_edit (no "_file") is hardcoded to always write $MAPFILE — it's
+    # machines.txt-specific despite the generic-sounding name. Must use the
+    # real generic one here with an explicit target, or this silently
+    # clobbers machines.txt with scripts.txt's content instead.
+    _inplace_edit_file "$SCRIPTS_FILE" awk -v n="$name" -v nn="$new_name" -v nt="$new_type" -v np="$new_path" -v nd="$new_dir" \
         '{ if ($1==n) { print nn, nt, np, nd } else print $0 }' "$SCRIPTS_FILE"
 }
 
@@ -1594,7 +1598,8 @@ _wt_add_script() {
 _wt_delete_script() {
     local name="$1"
     whiptail --title "Confirm delete" --yesno "Delete script '$name'?" 8 50 --defaultno || return 1
-    _inplace_edit awk -v n="$name" '$1!=n' "$SCRIPTS_FILE"
+    # See the comment in _wt_edit_script_entry — _inplace_edit is hardcoded to $MAPFILE.
+    _inplace_edit_file "$SCRIPTS_FILE" awk -v n="$name" '$1!=n' "$SCRIPTS_FILE"
 }
 
 _wt_pick_script() {
