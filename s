@@ -24,7 +24,7 @@ SYNC_REMOTE_PATH="validation/machines.txt"
 PATHS_SYNC_REMOTE_PATH="${SYNC_REMOTE_PATH%/*}/machine-paths.txt"
 FAVS_SYNC_REMOTE_PATH="${SYNC_REMOTE_PATH%/*}/favorites.txt"
 USERS_SYNC_REMOTE_PATH="${SYNC_REMOTE_PATH%/*}/users.txt"
-SCRIPTS_SYNC_REMOTE_DIR="${SYNC_REMOTE_PATH%/*}/ssh_shorty_scripts"
+SCRIPTS_SYNC_REMOTE_DIR="${SYNC_REMOTE_PATH%/*}/scripts"
 
 # User identity for fleet logs — set SHORTY_USER in config, defaults to $USER
 SHORTY_USER="${SHORTY_USER:-$USER}"
