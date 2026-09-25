@@ -1331,17 +1331,17 @@ _wt_edit_paths() {
 
 _wt_edit_script_entry() {
     local name="$1" type="$2" path="$3" dir="$4"
-    local form_res
-    form_res=$(whiptail --title "Edit script: $name" --form "" 16 60 4 \
-        "Name:"   1 1 "$name" 1 15 40 0 \
-        "Type:"   2 1 "$type" 2 15 40 0 \
-        "Path:"   3 1 "$path" 3 15 40 0 \
-        "Dir:"    4 1 "$dir"  4 15 40 0 \
-        3>&1 1>&2 2>&3) || return 1
-    
+    # Whiptail (newt) has no --form widget (that's a dialog(1)-only option —
+    # it fails instantly with "--form: unknown option" and returns nonzero
+    # before ever drawing anything, so the previous --form version of this
+    # silently no-op'd). Sequential --inputbox prompts instead, same pattern
+    # as _wt_edit_device elsewhere in this file.
     local new_name new_type new_path new_dir
-    { read -r new_name; read -r new_type; read -r new_path; read -r new_dir; } <<< "$form_res"
-    
+    new_name=$(whiptail --title "Edit script: $name" --inputbox "Name:" 10 60 "$name" 3>&1 1>&2 2>&3) || return 1
+    new_type=$(whiptail --title "Edit script: $name" --inputbox "Type (remote|local|local+ssh):" 10 60 "$type" 3>&1 1>&2 2>&3) || return 1
+    new_path=$(whiptail --title "Edit script: $name" --inputbox "Path:" 10 60 "$path" 3>&1 1>&2 2>&3) || return 1
+    new_dir=$(whiptail --title "Edit script: $name" --inputbox "Dir (remote working dir, local+ssh only):" 10 60 "$dir" 3>&1 1>&2 2>&3) || return 1
+
     if [[ -z "$new_name" || -z "$new_type" || -z "$new_path" ]]; then
         whiptail --msgbox "Name, Type, and Path are required." 8 50 1>&2
         return 1
@@ -1360,17 +1360,13 @@ _wt_edit_script_entry() {
 }
 
 _wt_add_script() {
-    local form_res
-    form_res=$(whiptail --title "Add new script" --form "" 16 60 4 \
-        "Name:"   1 1 "" 1 15 40 0 \
-        "Type:"   2 1 "local+ssh" 2 15 40 0 \
-        "Path:"   3 1 "" 3 15 40 0 \
-        "Dir:"    4 1 "/tmp" 4 15 40 0 \
-        3>&1 1>&2 2>&3) || return 1
-        
+    # See the comment in _wt_edit_script_entry — whiptail has no --form widget.
     local new_name new_type new_path new_dir
-    { read -r new_name; read -r new_type; read -r new_path; read -r new_dir; } <<< "$form_res"
-    
+    new_name=$(whiptail --title "Add new script" --inputbox "Name:" 10 60 "" 3>&1 1>&2 2>&3) || return 1
+    new_type=$(whiptail --title "Add new script" --inputbox "Type (remote|local|local+ssh):" 10 60 "local+ssh" 3>&1 1>&2 2>&3) || return 1
+    new_path=$(whiptail --title "Add new script" --inputbox "Path:" 10 60 "" 3>&1 1>&2 2>&3) || return 1
+    new_dir=$(whiptail --title "Add new script" --inputbox "Dir (remote working dir, local+ssh only):" 10 60 "/tmp" 3>&1 1>&2 2>&3) || return 1
+
     if [[ -z "$new_name" || -z "$new_type" || -z "$new_path" ]]; then
         whiptail --msgbox "Name, Type, and Path are required." 8 50 1>&2
         return 1
