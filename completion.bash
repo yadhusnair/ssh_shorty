@@ -322,12 +322,19 @@ _ssh_shorty_complete() {
                         local _nick="${cur%%:*}" _partial="${cur##*:}"
                         _complete_nick_path "$_nick" "$_partial"
                     else
-                        local -a aliases
+                        # Machine names get a ':' suffix baked in (so picking
+                        # one continues straight into nick:path); aliases get
+                        # a plain trailing space since they're a whole word on
+                        # their own. compgen only supports one -S suffix per
+                        # call, so match each set separately and append by hand.
+                        local -a aliases alias_matches machine_matches
                         mapfile -t aliases < <(_get_all_aliases)
-                        COMPREPLY=( $(compgen -W "${aliases[*]} ${machines[*]}" -- "$cur") )
-                        # nospace so nick: can be continued
-                        [[ ${#COMPREPLY[@]} -eq 1 && "${COMPREPLY[0]}" == "${machines[*]%% *}" ]] && \
-                            compopt -o nospace 2>/dev/null || true
+                        mapfile -t alias_matches < <(compgen -W "${aliases[*]}" -- "$cur")
+                        mapfile -t machine_matches < <(compgen -W "${machines[*]}" -- "$cur")
+                        COMPREPLY=()
+                        local _a _m
+                        for _a in "${alias_matches[@]}"; do COMPREPLY+=("$_a "); done
+                        for _m in "${machine_matches[@]}"; do COMPREPLY+=("$_m:"); done
                         compopt -o nospace 2>/dev/null
                     fi
                 elif [[ "$cword" -eq 3 ]]; then
@@ -358,6 +365,8 @@ _ssh_shorty_complete() {
                         _complete_nick_colon "$nick_for_path" "$cur"
                     else
                         COMPREPLY=( $(compgen -W "${machines[*]}" -- "$cur") )
+                        local _i
+                        for _i in "${!COMPREPLY[@]}"; do COMPREPLY[$_i]="${COMPREPLY[$_i]}:"; done
                         compopt -o nospace
                     fi
                 fi
