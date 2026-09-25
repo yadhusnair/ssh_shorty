@@ -209,8 +209,14 @@ _ssh_shorty() {
     out=$(timeout 2 "$script_path" --help < /dev/null 2>&1)
     [[ -z "$out" ]] && out=$(timeout 2 "$script_path" -h < /dev/null 2>&1)
     [[ -z "$out" ]] && return
-    local -a flags
-    flags=(${(fu)"$(tr -d '[]<>(),' <<< "$out" | grep -oE -- '--[a-zA-Z][a-zA-Z0-9_-]*' | sort -u | grep -v -- '^--help$')"})
+    local -a flags all_flags
+    all_flags=(${(fu)"$(tr -d '[]<>(),' <<< "$out" | grep -oE -- '--[a-zA-Z][a-zA-Z0-9_-]*' | sort -u | grep -v -- '^--help$')"})
+    # Drop flags already typed earlier on this command line — otherwise
+    # tab endlessly re-offers the same one (e.g. --ip) forever.
+    local f
+    for f in "${all_flags[@]}"; do
+        (( ${words[(I)$f]} )) || flags+=("$f")
+    done
     (( ${#flags} > 0 )) && compadd -- "${flags[@]}"
   }
 

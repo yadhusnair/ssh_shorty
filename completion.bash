@@ -178,8 +178,16 @@ _ssh_shorty_complete() {
         out=$(timeout 2 "$script_path" --help < /dev/null 2>&1)
         [[ -z "$out" ]] && out=$(timeout 2 "$script_path" -h < /dev/null 2>&1)
         [[ -z "$out" ]] && return
-        local -a flags
-        mapfile -t flags < <(tr -d '[]<>(),' <<< "$out" | grep -oE -- '--[a-zA-Z][a-zA-Z0-9_-]*' | sort -u | grep -v -- '^--help$')
+        local -a all_flags flags
+        mapfile -t all_flags < <(tr -d '[]<>(),' <<< "$out" | grep -oE -- '--[a-zA-Z][a-zA-Z0-9_-]*' | sort -u | grep -v -- '^--help$')
+        # Drop flags already typed earlier on this command line — otherwise
+        # tab endlessly re-offers the same one (e.g. --ip) forever.
+        local f w already
+        for f in "${all_flags[@]}"; do
+            already=0
+            for w in "${COMP_WORDS[@]}"; do [[ "$w" == "$f" ]] && { already=1; break; }; done
+            (( already )) || flags+=("$f")
+        done
         (( ${#flags[@]} > 0 )) && COMPREPLY=( $(compgen -W "${flags[*]}" -- "$cur") )
     }
 
