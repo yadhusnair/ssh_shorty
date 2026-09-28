@@ -91,6 +91,32 @@ _anim_enabled()  { [[ -t 1 && -z "${NO_COLOR-}" && -z "${NO_ANIM-}" ]]; }
 # NO_FZF=1 forces the plain whiptail/fzf-less fallback even when fzf is
 # installed — for testing that fallback without fighting PATH for it.
 _fzf_enabled()   { [[ -z "${NO_FZF-}" ]] && command -v fzf &>/dev/null; }
+
+# fzf's adaptive height (--height=~N%, shrinks to fit content instead of
+# always reserving N% of the screen) only exists from fzf 0.30.0 onward —
+# an older fzf rejects the literal "~" with "not a valid number: ~30" and
+# the picker never opens at all. Cache the check once (fzf --version is a
+# fresh process every call) and use _fzf_h "<N%>" everywhere instead of
+# hardcoding "~<N%>", so a teammate on an older fzf still gets a working
+# (just fixed-size, not adaptive) picker instead of a hard failure.
+_FZF_ADAPTIVE_HEIGHT=""
+_fzf_supports_adaptive_height() {
+    if [[ -z "$_FZF_ADAPTIVE_HEIGHT" ]]; then
+        local v maj min
+        v=$(fzf --version 2>/dev/null | awk '{print $1}')
+        IFS='.' read -r maj min _ <<< "$v"
+        maj="${maj:-0}"; min="${min:-0}"
+        if (( maj > 0 || min >= 30 )); then
+            _FZF_ADAPTIVE_HEIGHT=1
+        else
+            _FZF_ADAPTIVE_HEIGHT=0
+        fi
+    fi
+    [[ "$_FZF_ADAPTIVE_HEIGHT" == 1 ]]
+}
+_fzf_h() {
+    if _fzf_supports_adaptive_height; then printf '~%s' "$1"; else printf '%s' "$1"; fi
+}
 _hide_cursor()   { _CURSOR_HIDDEN=1; printf '\033[?25l'; }
 _show_cursor()   { _CURSOR_HIDDEN=0; printf '\033[?25h'; }
 _clear_line()   { printf '\033[2K\r'; }
@@ -979,7 +1005,7 @@ _wt_search_and_pick() {
             lines+=("$(printf '%-28s %s' "${_sp_items[$i]}" "${_sp_items[$((i+1))]}")")
         done
         choice=$(printf '%s\n' "${lines[@]}" \
-            | fzf --height=~90% --border --reverse --prompt="Search> " --header="$title — $prompt")
+            | fzf --height=$(_fzf_h 90%) --border --reverse --prompt="Search> " --header="$title — $prompt")
         [[ -z "$choice" ]] && return 1
         printf '%s' "${choice%% *}"
         return 0
@@ -1045,7 +1071,7 @@ _sc_pick_args_fzf() {
 
     local picked
     picked=$(printf '%s\n' "${flags[@]}" \
-        | fzf --multi --height=~50% --border=rounded \
+        | fzf --multi --height=$(_fzf_h 50%) --border=rounded \
               --prompt="  ${script_name} args → " \
               --header="  Script: ${script_name}  |  Tab: select multiple | Enter: confirm | Esc: run with no args" \
               --color='fg+:bold,gutter:-1')
@@ -1099,7 +1125,7 @@ _scr_pick_file() {
     local choice
     if _fzf_enabled; then
         choice=$(printf '%s\n' "${files[@]}" \
-            | fzf --height=~50% --border=rounded --prompt="  script file → " \
+            | fzf --height=$(_fzf_h 50%) --border=rounded --prompt="  script file → " \
                   --header="  Pick a file from $SCRIPTS_DIR" \
                   --color='fg+:bold,gutter:-1')
     else
@@ -1233,7 +1259,7 @@ _scr_push_cmd() {
     if _fzf_enabled; then
         local sel
         sel=$(printf '%s\n' "${local_files[@]}" \
-            | fzf --multi --height=~50% --border=rounded --prompt="  push → " \
+            | fzf --multi --height=$(_fzf_h 50%) --border=rounded --prompt="  push → " \
                   --header="  Tab: select multiple | Enter: push selected | Esc: push nothing" \
                   --color='fg+:bold,gutter:-1')
         [[ -z "$sel" ]] && { printf "Nothing selected to push.\n"; return 0; }
@@ -1528,7 +1554,7 @@ _wt_pick_script_type() {
     local current="$1"
     if _fzf_enabled; then
         printf '%s\n' remote local local+ssh \
-            | fzf --height=~30% --border=rounded --prompt="  type → " \
+            | fzf --height=$(_fzf_h 30%) --border=rounded --prompt="  type → " \
                   --header="  current: ${current:-none}" \
                   --color='fg+:bold,gutter:-1'
     else
@@ -1645,7 +1671,7 @@ _wt_edit_scripts() {
             if [[ "$type" != "local" ]]; then
                 _require_mapfile
                 m_pick=$(awk 'NF >= 2 && $1 !~ /^#/ {print $1, $2}' "$MAPFILE" | \
-                    fzf --ansi --height=~50% --border=rounded \
+                    fzf --ansi --height=$(_fzf_h 50%) --border=rounded \
                     --prompt="  target for $choice → " \
                     2>/dev/null | awk '{print $1}')
                 [[ -z "$m_pick" ]] && return 0
@@ -2147,7 +2173,7 @@ if [[ -z "$1" ]]; then
             printf "\n"
         }' "$MAPFILE" | \
         fzf --ansi \
-            --height=~50% \
+            --height=$(_fzf_h 50%) \
             --border=rounded \
             --prompt="  connect → " \
             --header="  Enter: connect | Ctrl-P: ping | Ctrl-K: keydeploy | Ctrl-S: sysinfo | Ctrl-E: edit" \
@@ -2642,7 +2668,7 @@ case "$1" in
                         if ($2 == "local+ssh") printf "%-20s %-10s %s (dir: %s)\n", $1, $2, $3, dir;
                         else printf "%-20s %-10s %s\n", $1, $2, $3
                     }' "$SCRIPTS_FILE" | \
-                    fzf --ansi --height=~50% --border=rounded \
+                    fzf --ansi --height=$(_fzf_h 50%) --border=rounded \
                         --prompt="  script → " \
                         --header="  Enter: run | Ctrl-E: edit scripts.txt | Ctrl-O: edit script file" \
                         --color='fg+:bold,gutter:-1' \
@@ -2662,7 +2688,7 @@ case "$1" in
                             for (i=3; i<=NF; i++) if ($i ~ /^#/) printf "  \033[2m%s\033[0m", $i
                             printf "\n"
                         }' "$MAPFILE" | \
-                        fzf --ansi --height=~50% --border=rounded \
+                        fzf --ansi --height=$(_fzf_h 50%) --border=rounded \
                             --prompt="  target for $PICK → " \
                             --color='fg+:bold,gutter:-1' \
                             2>/dev/null | awk '{print $1}')
