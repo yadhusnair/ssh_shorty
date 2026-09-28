@@ -467,6 +467,7 @@ usage() {
     printf "  s -u <local-path> <nick>[:<alias|path>]    upload file/dir (alias resolved)\n"
     printf "  s --docker-cp <local-path> <nick> <container>[:<dest>]   copy file into a container on a device\n"
     printf "  s --docker-download <nick> <container>:<path> [local-dest]   copy file out of a container\n"
+    printf "  s --docker-edit <nick> <container>:<path>       edit a file inside a container in \$EDITOR\n"
     printf "  s --rename <nickname> <new-name>            rename a device\n"
     printf "  s --remove <nickname>                       remove a device\n"
     printf "  s --tag <nickname> <tag>                    add a tag to a device (# auto-added)\n"
@@ -3067,6 +3068,70 @@ case "$1" in
         DD_STATUS=$?
         ssh "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" "$TARGET" "rm -rf '$DD_TMP'" 2>/dev/null
         exit $DD_STATUS
+        ;;
+
+    --docker-edit)
+        # Pulls a file out of a container, opens it in your local $EDITOR,
+        # and pushes it back in only if you actually changed it — edit a
+        # file that lives inside a remote container without manually
+        # ssh'ing in, docker exec'ing, fighting whatever editor happens to
+        # be installed in there (or isn't), then copying it back out by hand.
+        [[ -z "$2" || -z "$3" || "$3" != *:* ]] && {
+            printf "Usage: s --docker-edit <nickname> <container>:<path-in-container>\n"; exit 1; }
+        NICK="$2"; CONTAINER="${3%%:*}"; DE_SRC="${3#*:}"
+        [[ -z "$DE_SRC" ]] && { printf "No path given inside the container.\n"; exit 1; }
+        _get_single_target "$NICK" || exit 1
+        NICK="$RESOLVED_NICK"; TARGET="$RESOLVED_TARGET"
+        _load_device_opts "$NICK"
+        TARGET=$(_apply_mac_resolution "$NICK" "$TARGET")
+
+        # Same docker cp WORKDIR quirk as --docker-cp/--docker-download.
+        if [[ "$DE_SRC" != /* ]]; then
+            DE_WORKDIR=$(ssh "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" "$TARGET" \
+                "docker inspect '$CONTAINER' --format '{{.Config.WorkingDir}}'" 2>/dev/null)
+            [[ -z "$DE_WORKDIR" ]] && DE_WORKDIR="/"
+            DE_SRC="${DE_WORKDIR%/}/$DE_SRC"
+        fi
+
+        DE_RTMP="/tmp/.s_dockeredit_$$_$(basename "$DE_SRC")"
+        printf "Copying out of container '%s:%s'...\n" "$CONTAINER" "$DE_SRC"
+        if ! ssh "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" "$TARGET" \
+                "docker cp '$CONTAINER':'$DE_SRC' '$DE_RTMP'"; then
+            printf "${RED}docker cp failed${RESET} (bad path, container name, or docker not accessible on '%s').\n" "$NICK"
+            exit 1
+        fi
+
+        # A real local directory (not just a lone temp file) so the editor
+        # sees the file under its actual basename — matters for syntax
+        # highlighting / filetype detection in vim, nano, etc.
+        DE_LOCAL_DIR=$(mktemp -d)
+        DE_LOCAL_FILE="$DE_LOCAL_DIR/$(basename "$DE_SRC")"
+        trap 'rm -rf "$DE_LOCAL_DIR"; ssh "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" "$TARGET" "rm -rf '"'"'$DE_RTMP'"'"'" 2>/dev/null' EXIT INT TERM
+
+        ssh_cmd="ssh"
+        for o in "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}"; do ssh_cmd+=" $o"; done
+        _snap_transfer -e "$ssh_cmd" "$TARGET:$DE_RTMP" "$DE_LOCAL_FILE" || {
+            printf "${RED}Fetch failed.${RESET}\n"; exit 1; }
+
+        DE_SUM_BEFORE=$(_scr_sum "$DE_LOCAL_FILE")
+        "${EDITOR:-vi}" "$DE_LOCAL_FILE"
+        DE_SUM_AFTER=$(_scr_sum "$DE_LOCAL_FILE")
+
+        if [[ "$DE_SUM_BEFORE" == "$DE_SUM_AFTER" ]]; then
+            printf "No changes made — not pushed back.\n"
+            exit 0
+        fi
+
+        printf "Sending changes back into '%s:%s'...\n" "$CONTAINER" "$DE_SRC"
+        _snap_transfer -e "$ssh_cmd" "$DE_LOCAL_FILE" "$TARGET:$DE_RTMP" || {
+            printf "${RED}Push back failed — your edits are still at %s.${RESET}\n" "$DE_LOCAL_FILE"; exit 1; }
+        if ssh "${SSH_CTRL_OPTS[@]}" "${DEVICE_SSH_OPTS[@]}" "$TARGET" \
+                "docker cp '$DE_RTMP' '$CONTAINER':'$DE_SRC'"; then
+            printf "${GREEN}Saved back into %s on '%s': %s${RESET}\n" "$CONTAINER" "$NICK" "$DE_SRC"
+        else
+            printf "${RED}docker cp back into the container failed${RESET} — your edits are still at %s.\n" "$DE_LOCAL_FILE"
+            exit 1
+        fi
         ;;
 
     --add|-a)

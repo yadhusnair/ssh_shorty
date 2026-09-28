@@ -28,6 +28,7 @@ _ssh_shorty() {
     '--upload:upload file/dir to device'
     '--docker-cp:copy a file into a container on a device'
     '--docker-download:copy a file out of a container on a device'
+    '--docker-edit:edit a file inside a container in your local $EDITOR'
     '--script:run a registered script (or add/remove/list)'
     '--list:list all devices'
     '--add:add a new device'
@@ -409,6 +410,17 @@ _ssh_shorty() {
           fi
         elif (( CURRENT == 5 )); then
           _files
+        fi
+        ;;
+      --docker-edit)
+        if (( CURRENT == 3 )); then
+          _describe 'machine' machines
+        elif (( CURRENT == 4 )); then
+          if [[ "$PREFIX" == *:* ]]; then
+            _docker_container_colon_complete "${words[3]}" "$PREFIX"
+          else
+            _docker_containers_for "${words[3]}"
+          fi
         fi
         ;;
       --script)
