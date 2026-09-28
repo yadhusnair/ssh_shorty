@@ -2752,13 +2752,20 @@ case "$1" in
                         # since it'd see an --ip it never asked for and never parses.
                         _sc_wants_ip=0
                         [[ -x "$_sc_path" ]] && _sc_detect_flags "$_sc_path" | grep -qx -- '--ip' && _sc_wants_ip=1
+                        # ...but never inject it if the user already typed their own --ip —
+                        # otherwise the script sees BOTH (auto-resolved device IP first, the
+                        # user's real one second), relying on luck ("last --ip wins" in the
+                        # script's own parser) to end up with the right value instead of it
+                        # actually being correct.
+                        _sc_user_gave_ip=0
+                        for _sc_a in "$@"; do [[ "$_sc_a" == "--ip" ]] && _sc_user_gave_ip=1; done
 
                         for i in "${!run_nicks[@]}"; do
                             _load_device_opts "${run_nicks[$i]}"
                             _t=$(_apply_mac_resolution "${run_nicks[$i]}" "${run_targets[$i]}")
                             _ip=$(echo "$_t" | sed -E 's/.*@//' | awk -F: '{print $1}')
 
-                            if (( _sc_wants_ip )); then
+                            if (( _sc_wants_ip && !_sc_user_gave_ip )); then
                                 printf "${CYAN}[%s]${RESET} Running: %s --ip %s %s\n" "${run_nicks[$i]}" "$_script_base" "$_ip" "$*"
                                 "$_sc_path" --ip "$_ip" "$@"
                             else
