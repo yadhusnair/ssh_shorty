@@ -1322,16 +1322,21 @@ _wt_save_device() {
 _wt_edit_device() {
     local old_nick="$1" nick target port key mac alts tags
     _wt_load_device "$old_nick"
-    nick=$(whiptail --title "Edit: $old_nick" --inputbox "Nickname:" 10 60 "$old_nick" 3>&1 1>&2 2>&3) || return 1
-    if [[ -z "$nick" ]]; then
-        whiptail --msgbox "Nickname can't be empty — no changes made." 8 50
-        return 1
-    fi
+    # Nickname/Target are never meant to be blank, so unlike the optional
+    # fields below, "blank" is free to mean something here: start these two
+    # fields EMPTY (showing the current value in the prompt text instead of
+    # pre-filled into the box) and keep the old value if left blank. Whiptail
+    # has no "select all on focus" — pre-filling the box itself meant typing
+    # a replacement without first clearing it (Ctrl+U) silently appended
+    # onto the old value instead of replacing it.
+    nick=$(whiptail --title "Edit: $old_nick" --inputbox "Nickname (blank = keep '$old_nick'):" 10 60 "" 3>&1 1>&2 2>&3) || return 1
+    [[ -z "$nick" ]] && nick="$old_nick"
     if [[ "$nick" != "$old_nick" ]] && _nick_exists "$nick"; then
         whiptail --msgbox "Nickname '$nick' already exists — no changes made." 8 50
         return 1
     fi
-    target=$(whiptail --title "Edit: $nick" --inputbox "Target (user@host):" 10 60 "$WT_TARGET" 3>&1 1>&2 2>&3) || return 1
+    target=$(whiptail --title "Edit: $nick" --inputbox "Target (blank = keep '$WT_TARGET'):" 10 60 "" 3>&1 1>&2 2>&3) || return 1
+    [[ -z "$target" ]] && target="$WT_TARGET"
     port=$(whiptail --title "Edit: $nick" --inputbox "Port (blank = default 22):" 10 60 "$WT_PORT" 3>&1 1>&2 2>&3) || return 1
     key=$(whiptail --title "Edit: $nick" --inputbox "SSH key path (blank = default):" 10 60 "$WT_KEY" 3>&1 1>&2 2>&3) || return 1
     mac=$(whiptail --title "Edit: $nick" --inputbox "MAC address (blank = none, e.g. aa:bb:cc:dd:ee:ff):" 10 70 "$WT_MAC" 3>&1 1>&2 2>&3) || return 1
