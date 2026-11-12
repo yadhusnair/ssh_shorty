@@ -132,8 +132,29 @@ The shared fleet is an **append-only event log** on the sync server: `machines-m
 - Your local edits (CLI, `s --edit`, or by hand) are found by diffing against the last synced state, and appended as events.
 - Nothing is ever lost. A losing or wrong edit stays in the history, and `s --history` shows it.
 - An emptied or truncated local `machines.txt` can't retire the fleet. More than 3 retires in one sync (and over 20% of the fleet) are refused, and the file is rebuilt from the log.
-- On the server the log is protected with `sudo chattr +a machines-main.txt`. Even the `ati` user can only append to it, not truncate, overwrite or delete it. To compact or hand-fix it, run `sudo chattr -a` first.
+- On the server the log is protected with `sudo chattr +a machines-main.txt`. Even the `ati` user can only append to it, not truncate, overwrite or delete it (see below for how to undo that).
 - `machines.txt` on the server is still regenerated for clients on older versions. Devices they add get imported, but their other changes are ignored, so update with `s --update`.
+
+#### Unlocking the log (rm / edit / move it again)
+
+The append-only flag blocks `rm`, `mv`, truncating, `vi` saves and `scp` over the file, for every user. Only root can lift it. Run these on the sync server (`ssh ati@192.168.6.12`):
+
+```bash
+cd ~/ssh_shorty
+lsattr machines-main.txt              # "-----a--…" = locked (append-only)
+
+sudo chattr -a machines-main.txt      # unlock: rm/mv/edit work normally again
+cp machines-main.txt machines-main.txt.bak.$(date +%F)   # back it up before touching it
+vi machines-main.txt                  # …compact, fix a bad line, etc.
+
+sudo chattr +a machines-main.txt      # re-lock when done (always do this)
+lsattr machines-main.txt              # confirm the "a" is back
+```
+
+- **Leave it unlocked as briefly as possible.** While it's unlocked, a bad push or a stray `>` can wipe the fleet again.
+- **Keep every line in the format** `<epoch> <user> <nick> set <user@ip> [#tags] [mac=…]` or `<epoch> <user> <nick> retire`. Clients ignore lines that don't match.
+- **To fix a wrong IP, don't edit the log.** Run `s --set <nick> <user@ip>`; the correction is just a newer event.
+- **To delete the log completely** (e.g. retiring the sync server): `sudo chattr -a machines-main.txt && rm machines-main.txt`. The next `s --sync` from any client re-seeds it from that client's `machines.txt`.
 
 ### Duplicate IP detection
 
