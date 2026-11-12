@@ -550,9 +550,21 @@ _merge_remote_mapfile() {
     mv "$_mm2" "$_mm"
 
     # Dedup by host — local (first occurrence) wins; strips user@ for comparison
+    # Write to a temp file and mv into place — never `> "$MAPFILE"` directly:
+    # the shell truncates the target first, and any concurrent `s` (another
+    # pane, a completion) running _dedup_mapfile in that window reads an empty
+    # file and mv's the empty result over the real one. That race wiped the
+    # whole shared fleet once (2026-11-12).
+    local _mm3; _mm3=$(mktemp "$CONFIG_DIR/.sync_m.XXXXXX")
     awk 'NF==0||/^[[:space:]]*#/{print;next}{h=$2;sub(/^[^@]*@/,"",h);if(!seen[h]++)print}' \
-        "$_mm" > "$MAPFILE"
+        "$_mm" > "$_mm3" && mv "$_mm3" "$MAPFILE" || rm -f "$_mm3"
     rm -f "$_mm"
+}
+
+# True if MAPFILE has at least one device line. Every push path checks this
+# so an empty local copy can never overwrite the shared fleet.
+_mapfile_has_entries() {
+    grep -qv '^[[:space:]]*\(#\|$\)' "$MAPFILE" 2>/dev/null
 }
 
 _sync_push() {
@@ -568,6 +580,10 @@ _sync_push() {
     rm -f "$_spr"
 
     _dedup_mapfile "$MAPFILE"
+    if ! _mapfile_has_entries; then
+        printf "  ${YELLOW}not syncing: local machines.txt is empty${RESET}\n" >&2
+        return 0
+    fi
     if scp -q -o BatchMode=yes -o ConnectTimeout=5 \
             "$MAPFILE" "${SYNC_HOST}:${SYNC_REMOTE_PATH}" 2>/dev/null; then
         # Also push machine-paths.txt and favorites.txt alongside machines.txt
@@ -3475,7 +3491,7 @@ case "$1" in
             rm -f "$_sdl"
             _dedup_mapfile "$MAPFILE"
             printf "  ${GREEN}merged${RESET}   %s:%s\n" "$SYNC_HOST" "$SYNC_REMOTE_PATH"
-            scp -q -o BatchMode=yes -o ConnectTimeout=10 \
+            _mapfile_has_entries && scp -q -o BatchMode=yes -o ConnectTimeout=10 \
                 "$MAPFILE" "${SYNC_HOST}:${SYNC_REMOTE_PATH}" 2>/dev/null \
                 && printf "  ${GREEN}pushed${RESET}   %s → %s:%s\n" "$MAPFILE" "$SYNC_HOST" "$SYNC_REMOTE_PATH"
             _spdl=$(mktemp "$CONFIG_DIR/.pull.XXXXXX")
@@ -3503,7 +3519,7 @@ case "$1" in
             rm -f "$_sdl"
             # Try to push (seeds remote if it doesn't exist yet)
             _dedup_mapfile "$MAPFILE"
-            if scp -q -o BatchMode=yes -o ConnectTimeout=10 \
+            if _mapfile_has_entries && scp -q -o BatchMode=yes -o ConnectTimeout=10 \
                     "$MAPFILE" "${SYNC_HOST}:${SYNC_REMOTE_PATH}" 2>/dev/null; then
                 [[ -f "$PATHS_FILE" ]] && \
                     scp -q -o BatchMode=yes -o ConnectTimeout=10 \
