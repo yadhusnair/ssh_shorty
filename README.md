@@ -112,9 +112,28 @@ s --sync
 |--------|-------------|
 | `s --set tug42 ati@192.168.6.200` | Updates locally + pushes to sync server immediately |
 | `s --add newbot ati@10.0.0.5 #fm` | Adds locally + pushes |
-| `s --remove oldbot` | Removes locally + pushes |
+| `s --remove oldbot` | Retires it: hidden everywhere, history kept |
+| `s --restore oldbot` | Brings a retired device back with its last address |
+| `s --history tug42` | Every address/edit the device has had: when and by whom |
+| `s --history` | The last 30 changes across the whole fleet |
 | Any `s` command | Background pull fires if last sync was >10 min ago (never blocks your prompt) |
 | `s --sync` | Manual pull/push |
+
+### Fleet history log (`machines-main.txt`)
+
+The shared fleet is an **append-only event log** on the sync server: `machines-main.txt`, next to `machines.txt`. Clients never rewrite it. Every add, IP change or retire becomes a new line:
+
+```
+1794458507 arjun fm12 set ati@192.168.6.40 #fm     ← <epoch> <user> <nick> set <address> [tags…]
+1794460000 meera tug181 retire
+```
+
+- Your `machines.txt` is rebuilt from the log. **For each device, the newest edit wins.** Edits are timestamped when you make them, not when you sync, so an old offline edit can't override a newer one.
+- Your local edits (CLI, `s --edit`, or by hand) are found by diffing against the last synced state, and appended as events.
+- Nothing is ever lost. A losing or wrong edit stays in the history, and `s --history` shows it.
+- An emptied or truncated local `machines.txt` can't retire the fleet. More than 3 retires in one sync (and over 20% of the fleet) are refused, and the file is rebuilt from the log.
+- On the server the log is protected with `sudo chattr +a machines-main.txt`. Even the `ati` user can only append to it, not truncate, overwrite or delete it. To compact or hand-fix it, run `sudo chattr -a` first.
+- `machines.txt` on the server is still regenerated for clients on older versions. Devices they add get imported, but their other changes are ignored, so update with `s --update`.
 
 ### Duplicate IP detection
 

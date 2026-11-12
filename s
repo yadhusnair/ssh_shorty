@@ -469,7 +469,9 @@ usage() {
     printf "  s --docker-download <nick> <container>:<path> [local-dest]   copy file out of a container\n"
     printf "  s --docker-edit <nick> <container>:<path>       edit a file inside a container in \$EDITOR\n"
     printf "  s --rename <nickname> <new-name>            rename a device\n"
-    printf "  s --remove <nickname>                       remove a device\n"
+    printf "  s --remove <nickname>                       retire a device (history kept)\n"
+    printf "  s --restore <nickname>                      bring back a retired device\n"
+    printf "  s --history [nickname]                      IP/edit history of a device (or recent fleet changes)\n"
     printf "  s --tag <nickname> <tag>                    add a tag to a device (# auto-added)\n"
     printf "  s --untag <nickname> <tag>                  remove a tag from a device\n"
     printf "  s --set-host                                configure SYNC_HOST (creates its folder)\n"
@@ -493,100 +495,159 @@ usage() {
 
 _sync_remote_dir() { printf '%s' "${SYNC_REMOTE_PATH%/*}"; }
 
-# Deletes a nick's line directly on SYNC_HOST's copy of machines.txt. Must be
-# called BEFORE _sync_push whenever a nick is removed or renamed away from —
-# _sync_push's own pull-merge treats "nick missing locally, present remotely"
-# as a peer's addition to preserve, which otherwise silently resurrects
-# exactly the device that was just deleted/renamed, both locally and remote.
-_sync_remove_remote_nick() {
-    local nick="$1"
-    [[ -z "$SYNC_HOST" || -z "$nick" ]] && return 0
-    ssh -q -o BatchMode=yes -o ConnectTimeout=5 "$SYNC_HOST" \
-        "awk -v n='$nick' '\$1!=n' ~/${SYNC_REMOTE_PATH} > ~/${SYNC_REMOTE_PATH}.tmp 2>/dev/null && mv ~/${SYNC_REMOTE_PATH}.tmp ~/${SYNC_REMOTE_PATH}" \
-        2>/dev/null
-}
+# ── Fleet history log ──────────────────────────────────────────────────────────
+# The shared fleet lives on SYNC_HOST as machines-main.txt: an append-only event
+# log (chattr +a on the host), never rewritten by any client. One event per line:
+#
+#   <epoch> <user> <nick> set <user@host> [#tags] [mac=..] ...   add or change
+#   <epoch> <user> <nick> retire                                 hide (kept forever)
+#
+# Current state = replay: per nick, the event with the newest epoch wins (ties
+# → later in the log). Local machines.txt is generated from the log; local edits
+# (s --add/--set/--edit/vim) are found by diffing machines.txt against
+# .machines.base (the state as of the last sync) and appended as new events.
+# machines.txt on SYNC_HOST is regenerated for clients older than this design.
+FLEET_LOG="$CONFIG_DIR/machines-main.txt"     # local cache of the remote log
+FLEET_BASE="$CONFIG_DIR/.machines.base"       # state as of the last good sync
+FLEET_LOG_REMOTE="${SYNC_REMOTE_PATH%/*}/machines-main.txt"
 
-# Merges a freshly-pulled remote machines.txt (given as a file path) into
-# $MAPFILE in place: any nick present only in the remote copy is added; on a
-# nick/host collision, local wins. Shared by _sync_push (merge-before-push,
-# so a concurrent peer's additions aren't lost) and s --sync (merge-on-pull,
-# so pulling never blindly overwrites local-only changes — e.g. a rename
-# that hasn't been pushed yet).
-_merge_remote_mapfile() {
-    local remote_file="$1"
-    [[ -f "$remote_file" ]] || return 1
-    local _mm; _mm=$(mktemp "$CONFIG_DIR/.sync_m.XXXXXX")
-    if [[ -f "$MAPFILE" ]]; then cp "$MAPFILE" "$_mm"; else : > "$_mm"; fi
-    # Append remote entries whose nick is not in local (preserves peer additions)
-    while IFS= read -r _rl; do
-        [[ -z "$_rl" || "$_rl" == \#* ]] && continue
-        local _rn; _rn=$(printf '%s' "$_rl" | awk '{print $1}')
-        [[ -z "$_rn" ]] && continue
-        if ! awk -v n="$_rn" '$1==n{found=1;exit}END{exit !found}' "$_mm" 2>/dev/null; then
-            printf '%s\n' "$_rl" >> "$_mm"
-        fi
-    done < "$remote_file"
+_remote() { ssh -q -o BatchMode=yes -o ConnectTimeout=5 "$SYNC_HOST" "$@"; }
 
-    # Backfill mac= for a nick that already exists locally but is missing
-    # it while the remote copy has one — e.g. `s --oneshot` or an on-connect
-    # ARP recovery ran on a different machine and learned it there first.
-    # A same-nick match otherwise never looks past "already have this nick",
-    # so a MAC learned elsewhere would never reach this machine otherwise.
-    # Local's own mac= (if already set) always wins — this only fills blanks.
-    local _mm2; _mm2=$(mktemp "$CONFIG_DIR/.sync_m.XXXXXX")
-    awk '
-        NR==FNR {
-            for (i=2;i<=NF;i++) if ($i ~ /^mac=/) rmac[$1]=$i
-            next
-        }
-        {
-            has_mac=0
-            for (i=2;i<=NF;i++) if ($i ~ /^mac=/) has_mac=1
-            line=$0
-            if (!has_mac && ($1 in rmac)) line = line " " rmac[$1]
-            print line
-        }
-    ' "$remote_file" "$_mm" > "$_mm2"
-    mv "$_mm2" "$_mm"
-
-    # Dedup by host — local (first occurrence) wins; strips user@ for comparison
-    # Write to a temp file and mv into place — never `> "$MAPFILE"` directly:
-    # the shell truncates the target first, and any concurrent `s` (another
-    # pane, a completion) running _dedup_mapfile in that window reads an empty
-    # file and mv's the empty result over the real one. That race wiped the
-    # whole shared fleet once (2026-11-12).
-    local _mm3; _mm3=$(mktemp "$CONFIG_DIR/.sync_m.XXXXXX")
-    awk 'NF==0||/^[[:space:]]*#/{print;next}{h=$2;sub(/^[^@]*@/,"",h);if(!seen[h]++)print}' \
-        "$_mm" > "$_mm3" && mv "$_mm3" "$MAPFILE" || rm -f "$_mm3"
-    rm -f "$_mm"
-}
-
-# True if MAPFILE has at least one device line. Every push path checks this
-# so an empty local copy can never overwrite the shared fleet.
+# True if MAPFILE has at least one device line.
 _mapfile_has_entries() {
     grep -qv '^[[:space:]]*\(#\|$\)' "$MAPFILE" 2>/dev/null
+}
+
+# Event log(s) on argv → current state on stdout (sorted, host-deduped exactly
+# like _dedup_mapfile, so a dedup on the next run never looks like an edit).
+_fleet_replay() {
+    cat "$@" 2>/dev/null \
+    | awk 'NF>=4 && $1 ~ /^[0-9]+$/ { printf "%s %d %s\n", $1, NR, $0 }' \
+    | sort -s -k1,1n -k2,2n | cut -d' ' -f3- \
+    | awk '{
+        n=$3; op=$4
+        if (op=="retire") { delete st[n]; next }
+        if (op!="set") next
+        r=$0; sub(/^[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ */, "", r); st[n]=r
+      } END { for (n in st) print n " " st[n] }' \
+    | sort -k1,1 \
+    | awk '{h=$2;sub(/^[^@]*@/,"",h);if(!seen[h]++)print}'
+}
+
+# Diff <base> against <current> → events on stdout, stamped <ts> <user>.
+_fleet_diff() {
+    awk -v ts="$3" -v u="$4" '
+        function rest(   r) { r=$0; sub(/^[ \t]*[^ \t]+[ \t]+/,"",r); gsub(/[ \t]+/," ",r); sub(/ $/,"",r); return r }
+        NF<2 || $1 ~ /^#/ { next }
+        FILENAME==ARGV[1] { base[$1]=rest(); next }
+        { seen[$1]=1; r=rest(); if (!($1 in base) || base[$1]!=r) print ts " " u " " $1 " set " r }
+        END { for (n in base) if (!(n in seen)) print ts " " u " " n " retire" }
+    ' "$1" "$2"
+}
+
+# Pull the log, append local edits as events, regenerate machines.txt.
+# Returns 0 on success, 1 if SYNC_HOST is unreachable (local edits stay
+# pending in machines.txt vs .machines.base and go out on the next sync).
+# Sets FLEET_PUSHED to the number of events appended.
+_fleet_sync() {
+    FLEET_PUSHED=0
+    [[ -z "$SYNC_HOST" ]] && return 0
+    mkdir -p "$CONFIG_DIR"
+    local _cnt="$CONFIG_DIR/.fleet.pushed"; rm -f "$_cnt"
+    ( flock -w 30 9 || exit 1; _fleet_sync_locked "$_cnt" ) 9>"$CONFIG_DIR/.fleet.lock"
+    local rc=$?
+    [[ -f "$_cnt" ]] && FLEET_PUSHED=$(<"$_cnt") && rm -f "$_cnt"
+    return $rc
+}
+
+_fleet_sync_locked() {
+    local cnt_file="$1" rdir; rdir=$(_sync_remote_dir)
+    local tmp; tmp=$(mktemp -d "$CONFIG_DIR/.fleet.XXXXXX")
+    trap 'rm -rf "$tmp"' RETURN
+
+    # One round-trip: the log (if any) and the legacy machines.txt
+    _remote "mkdir -p ~/${rdir}; if [ -f ~/${FLEET_LOG_REMOTE} ]; then echo '##LOG'; cat ~/${FLEET_LOG_REMOTE}; fi; echo '##LEGACY'; cat ~/${SYNC_REMOTE_PATH} 2>/dev/null; true" \
+        > "$tmp/pull" 2>/dev/null || return 1
+    grep -q '^##LEGACY$' "$tmp/pull" || return 1
+    awk -v d="$tmp" '/^##LOG$/{f=d"/log";printf "" > f;next} /^##LEGACY$/{f=d"/legacy";printf "" > f;next} f{print > f}' "$tmp/pull"
+    local have_log=0; [[ -f "$tmp/log" ]] && have_log=1
+    touch "$tmp/log" "$tmp/legacy"
+
+    local now user edited; now=$(date +%s); user="${SHORTY_USER// /_}"
+    # Local edits are stamped with when machines.txt was last edited, so the
+    # newest *edit* wins — not whoever happened to sync last
+    edited=$(stat -c %Y "$MAPFILE" 2>/dev/null || echo "$now"); (( edited > now )) && edited=$now
+    local remote_state="$tmp/rstate"; _fleet_replay "$tmp/log" > "$remote_state"
+    awk 'NF>=4 && $1 ~ /^[0-9]+$/ {print $3}' "$tmp/log" | sort -u > "$tmp/known"
+
+    # What this machine changed since its last sync
+    local sum_before=""; [[ -f "$MAPFILE" ]] && sum_before=$(cksum < "$MAPFILE")
+    : > "$tmp/events"
+    if _mapfile_has_entries; then
+        if [[ -f "$FLEET_BASE" && $have_log -eq 1 ]]; then
+            _fleet_diff "$FLEET_BASE" "$MAPFILE" "$edited" "$user" > "$tmp/events"
+        else
+            # First sync with the log (fresh install / upgrade from the old
+            # sync): only contribute devices the log has never heard of — a
+            # stale local copy must not override newer edits or un-retire.
+            _fleet_diff /dev/null "$MAPFILE" "$edited" "$user" \
+                | awk 'FILENAME==ARGV[1]{k[$1];next} !($3 in k)' "$tmp/known" - > "$tmp/events"
+        fi
+    fi
+    # Bulk-retire guard: an emptied or truncated machines.txt must never be
+    # able to retire the fleet. Real removals go one at a time (s --remove).
+    local n_ret n_base
+    n_ret=$(awk '$4=="retire"' "$tmp/events" | wc -l)
+    n_base=$(grep -cv '^[[:space:]]*\(#\|$\)' "$FLEET_BASE" 2>/dev/null); n_base=${n_base:-0}
+    if (( n_ret > 3 && n_ret * 5 > n_base )); then
+        printf "  ${YELLOW}sync: refusing to retire %d devices at once — local machines.txt looks damaged; rebuilding it from the fleet log${RESET}\n" "$n_ret" >&2
+        awk '$4!="retire"' "$tmp/events" > "$tmp/ev2" && mv "$tmp/ev2" "$tmp/events"
+    fi
+    # Devices an old-version client pushed into the legacy machines.txt that
+    # the log has never seen: import them (adds only — never changes/retires).
+    _fleet_diff /dev/null "$tmp/legacy" "$now" "legacy" \
+        | awk 'FILENAME==ARGV[1]{k[$1];next} !($3 in k)' "$tmp/known" - \
+        | awk 'FILENAME==ARGV[1]{k[$3];next} !($3 in k)' "$tmp/events" - > "$tmp/legacy_ev"
+    cat "$tmp/legacy_ev" >> "$tmp/events"
+
+    local n_ev; n_ev=$(grep -c . "$tmp/events")
+    if (( n_ev > 0 )); then
+        _remote "flock ~/${rdir}/.machines-main.lock -c 'cat >> ~/${FLEET_LOG_REMOTE}'" \
+            < "$tmp/events" 2>/dev/null || return 1
+        cat "$tmp/events" >> "$tmp/log"
+    fi
+    cp "$tmp/log" "$FLEET_LOG.tmp" && mv "$FLEET_LOG.tmp" "$FLEET_LOG"
+
+    _fleet_replay "$tmp/log" > "$tmp/state"
+    # Don't clobber an edit made to machines.txt while we were syncing — the
+    # next sync diffs it against the (unchanged) base and pushes it then.
+    local sum_now=""; [[ -f "$MAPFILE" ]] && sum_now=$(cksum < "$MAPFILE")
+    if [[ "$sum_now" == "$sum_before" ]]; then
+        cmp -s "$tmp/state" "$MAPFILE" || { cp "$tmp/state" "$CONFIG_DIR/.machines.new" && mv "$CONFIG_DIR/.machines.new" "$MAPFILE"; }
+        cp "$tmp/state" "$FLEET_BASE"
+    fi
+
+    if (( n_ev > 0 )); then
+        # Regenerate the legacy file for old clients (atomic on the host) and
+        # bump the version so every client pulls within 30s
+        [[ -s "$tmp/state" ]] && _remote "cat > ~/${SYNC_REMOTE_PATH}.tmp && mv ~/${SYNC_REMOTE_PATH}.tmp ~/${SYNC_REMOTE_PATH}" \
+            < "$tmp/state" 2>/dev/null
+        local ver; ver=$(date +%s)
+        printf '%s\n' "$ver" | _remote "cat > ~/${rdir}/.machines_version" 2>/dev/null
+        echo "$ver" > "$CONFIG_DIR/.machines_version" 2>/dev/null
+    fi
+    echo "$n_ev" > "$cnt_file"
+    return 0
 }
 
 _sync_push() {
     [[ -z "$SYNC_HOST" ]] && return 0
     local rdir; rdir=$(_sync_remote_dir)
 
-    # Pull-before-push: fetch remote, union-merge (add remote nicks absent locally), dedup IPs
-    local _spr; _spr=$(mktemp "$CONFIG_DIR/.sync_r.XXXXXX")
-    if scp -q -o BatchMode=yes -o ConnectTimeout=5 \
-            "${SYNC_HOST}:${SYNC_REMOTE_PATH}" "$_spr" 2>/dev/null; then
-        _merge_remote_mapfile "$_spr"
-    fi
-    rm -f "$_spr"
-
     _dedup_mapfile "$MAPFILE"
-    if ! _mapfile_has_entries; then
-        printf "  ${YELLOW}not syncing: local machines.txt is empty${RESET}\n" >&2
-        return 0
-    fi
-    if scp -q -o BatchMode=yes -o ConnectTimeout=5 \
-            "$MAPFILE" "${SYNC_HOST}:${SYNC_REMOTE_PATH}" 2>/dev/null; then
-        # Also push machine-paths.txt and favorites.txt alongside machines.txt
+    # Append local edits to the fleet log + regenerate machines.txt from it
+    if _fleet_sync; then
+        # Also push machine-paths.txt and favorites.txt alongside the fleet
         [[ -f "$PATHS_FILE" ]] && \
             scp -q -o BatchMode=yes -o ConnectTimeout=5 \
                 "$PATHS_FILE" "${SYNC_HOST}:${PATHS_SYNC_REMOTE_PATH}" 2>/dev/null
@@ -688,9 +749,9 @@ _sync_bg() {
     # stamp from that very same successful run, permanently blocking every
     # future background sync from then on. Safe to drop: any command that
     # edits MAPFILE directly (--add/--rename/--set/...) already calls
-    # _sync_push itself right after, and _merge_remote_mapfile's union-merge
-    # is non-destructive — local content always wins on conflicts — so a
-    # background sync can never clobber an in-flight local edit anyway.)
+    # _sync_push itself right after, and _fleet_sync appends local edits to
+    # the log before regenerating machines.txt, so a background sync can
+    # never clobber an in-flight local edit anyway.)
     (
         touch "$stamp" 2>/dev/null
         local tmp_ver; tmp_ver=$(mktemp)
@@ -698,16 +759,9 @@ _sync_bg() {
         if scp -q -o BatchMode=yes -o ConnectTimeout=5 \
                 "${SYNC_HOST}:${rdir}/.machines_version" "$tmp_ver" 2>/dev/null; then
             if ! diff -q "$tmp_ver" "$local_ver" &>/dev/null; then
-                # Version changed — pull atomically to temp, then move into place + dedup
-                local _dl; _dl=$(mktemp "$CONFIG_DIR/.pull.XXXXXX")
-                if scp -q -o BatchMode=yes -o ConnectTimeout=5 \
-                        "${SYNC_HOST}:${SYNC_REMOTE_PATH}" "$_dl" 2>/dev/null; then
-                    # Merge, don't overwrite — this runs silently in the
-                    # background on every command, so a blind overwrite here
-                    # would clobber any local-only change without warning.
-                    _merge_remote_mapfile "$_dl"
-                    rm -f "$_dl"
-                    _dedup_mapfile "$MAPFILE"
+                # Version changed — replay the fleet log (appends any local
+                # edits first; never overwrites them)
+                if _fleet_sync >/dev/null 2>&1; then
                     local _pdl; _pdl=$(mktemp "$CONFIG_DIR/.pull.XXXXXX")
                     scp -q -o BatchMode=yes -o ConnectTimeout=5 \
                         "${SYNC_HOST}:${PATHS_SYNC_REMOTE_PATH}" "$_pdl" 2>/dev/null \
@@ -721,16 +775,15 @@ _sync_bg() {
                         "${SYNC_HOST}:${USERS_SYNC_REMOTE_PATH}" "$_udl" 2>/dev/null \
                         && mv "$_udl" "$USERS_FILE" || rm -f "$_udl"
                     cp "$tmp_ver" "$local_ver" 2>/dev/null
-                else
-                    rm -f "$_dl"
                 fi
+            elif [[ -f "$MAPFILE" ]] && ! cmp -s "$MAPFILE" "$FLEET_BASE"; then
+                # Fleet unchanged remotely but edited here without a push
+                # (e.g. s --edit in \$EDITOR, or an earlier offline edit)
+                _fleet_sync >/dev/null 2>&1
             fi
         else
             # No version file yet — pull unconditionally (first sync or legacy server)
-            local _dl; _dl=$(mktemp "$CONFIG_DIR/.pull.XXXXXX")
-            scp -q -o BatchMode=yes -o ConnectTimeout=5 \
-                "${SYNC_HOST}:${SYNC_REMOTE_PATH}" "$_dl" 2>/dev/null \
-                && { _merge_remote_mapfile "$_dl"; rm -f "$_dl"; _dedup_mapfile "$MAPFILE"; } || rm -f "$_dl"
+            _fleet_sync >/dev/null 2>&1
             local _pdl; _pdl=$(mktemp "$CONFIG_DIR/.pull.XXXXXX")
             scp -q -o BatchMode=yes -o ConnectTimeout=5 \
                 "${SYNC_HOST}:${PATHS_SYNC_REMOTE_PATH}" "$_pdl" 2>/dev/null \
@@ -986,7 +1039,10 @@ _dedup_mapfile() {
     # alphabetical no matter which path added/renamed an entry (CLI, the
     # whiptail editor, or a sync pull).
     awk 'NF==0||/^[[:space:]]*#/{print;next}{h=$2;sub(/^[^@]*@/,"",h);if(!seen[h]++)print}' \
-        "$file" | sort -k1,1 > "$TF" && mv "$TF" "$file" || rm -f "$TF"
+        "$file" | sort -k1,1 > "$TF" || { rm -f "$TF"; return; }
+    # Only replace on a real change: machines.txt's mtime is the "edited at"
+    # time the fleet log stamps local edits with (newest edit wins).
+    if cmp -s "$TF" "$file"; then rm -f "$TF"; else mv "$TF" "$file"; fi
 }
 
 # Generic: run a command's stdout into a new file, replacing $1 atomically.
@@ -1367,10 +1423,6 @@ _wt_edit_device() {
         return 1
     fi
     _wt_save_device "$old_nick" "$nick" "$target" "$port" "$key" "$mac" "$alts" "$tags" "$WT_PRESERVE"
-    # Signals a rename to the caller so it can also purge the old nick from
-    # SYNC_HOST — otherwise _sync_push's pull-merge would resurrect it.
-    WT_RENAMED_FROM=""
-    [[ "$nick" != "$old_nick" ]] && WT_RENAMED_FROM="$old_nick"
     return 0
 }
 
@@ -1439,7 +1491,6 @@ _wt_pick_device() {
 _wt_edit_machines() {
     _require_mapfile
     local dirty=0
-    local -a removed_nicks=()
     # One action per invocation, not a loop back to this menu — Esc, or
     # finishing any single action (add/edit/delete), both exit straight back
     # to the shell instead of re-showing "Choose an action".
@@ -1453,30 +1504,20 @@ _wt_edit_machines() {
         case "$action" in
             edit)
                 local nick; nick=$(_wt_pick_device "Select a device to edit")
-                if [[ -n "$nick" ]] && _wt_edit_device "$nick"; then
-                    dirty=1
-                    [[ -n "$WT_RENAMED_FROM" ]] && removed_nicks+=("$WT_RENAMED_FROM")
-                fi
+                [[ -n "$nick" ]] && _wt_edit_device "$nick" && dirty=1
                 ;;
             add)
                 _wt_add_device && dirty=1
                 ;;
             delete)
                 local nick; nick=$(_wt_pick_device "Select a device to delete")
-                if [[ -n "$nick" ]] && _wt_delete_device "$nick"; then
-                    dirty=1
-                    removed_nicks+=("$nick")
-                fi
+                [[ -n "$nick" ]] && _wt_delete_device "$nick" && dirty=1
                 ;;
         esac
     fi
     clear 2>/dev/null
     if (( dirty )); then
         _dedup_mapfile "$MAPFILE"
-        local rn
-        for rn in "${removed_nicks[@]}"; do
-            _sync_remove_remote_nick "$rn"
-        done
         printf "${GREEN}Fleet updated.${RESET}\n"
         _sync_push
     else
@@ -3272,6 +3313,57 @@ case "$1" in
         _sync_push
         ;;
 
+    --history)
+        [[ -n "$SYNC_HOST" ]] && _fleet_sync >/dev/null 2>&1
+        [[ -s "$FLEET_LOG" ]] || { printf "No fleet history yet (needs SYNC_HOST + s --sync).\n"; exit 1; }
+        if [[ -n "${2-}" ]] && ! awk -v n="$2" '$3==n{f=1;exit}END{exit !f}' "$FLEET_LOG"; then
+            printf "No history for '%s'.\n" "$2"; exit 1
+        fi
+        awk 'NF>=4 && $1 ~ /^[0-9]+$/ { printf "%s %d %s\n", $1, NR, $0 }' "$FLEET_LOG" \
+        | sort -s -k1,1n -k2,2n | cut -d' ' -f3- \
+        | awk -v want="${2-}" -v y="$YELLOW" -v d="$DIM" -v r="$RESET" '
+            want != "" && $3 != want { next }
+            {
+                n=$3; op=$4; host=(op=="set") ? $5 : ""
+                rest=$0; sub(/^[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ */, "", rest)
+                cmd="date -d @" $1 " \"+%Y-%m-%d %H:%M\""; cmd | getline when; close(cmd)
+                note=""
+                if (op=="retire") { what=y "retired" r; gone[n]=1 }
+                else if (!(n in last)) { what="added   " host }
+                else if (gone[n]) { what="restored " host; gone[n]=0 }
+                else if (host != last[n]) { what=y "IP      " host r d "  (was " last[n] ")" r }
+                else { what="edited  " host }
+                if (op=="set") { last[n]=host; if (rest != "") note=d "  " rest r }
+                line=sprintf("  %s  %-10s %s%s", when, $2, (want=="" ? sprintf("%-22s ", n) : ""), what note)
+                out[++k]=line
+            }
+            END {
+                s = (want=="" && k>30) ? k-29 : 1
+                for (i=s; i<=k; i++) print out[i]
+            }'
+        ;;
+
+    --restore)
+        [[ -z "${2-}" ]] && { printf "Usage: s --restore <nickname>\n"; exit 1; }
+        [[ -n "$SYNC_HOST" ]] && _fleet_sync >/dev/null 2>&1
+        if [[ -f "$MAPFILE" ]] && _nick_exists "$2"; then
+            printf "'%s' is already active.\n" "$2"; exit 1
+        fi
+        _rs_line=$(awk 'NF>=4 && $1 ~ /^[0-9]+$/ { printf "%s %d %s\n", $1, NR, $0 }' "$FLEET_LOG" 2>/dev/null \
+            | sort -s -k1,1n -k2,2n | cut -d' ' -f3- \
+            | awk -v n="$2" '$3==n && $4=="set" { r=$0; sub(/^[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ */, "", r); last=r } END { print last }')
+        [[ -z "$_rs_line" ]] && { printf "No history for '%s' — nothing to restore.\n" "$2"; exit 1; }
+        _rs_host="${_rs_line%% *}"; _rs_host="${_rs_host#*@}"
+        _rs_clash=$(awk -v h="$_rs_host" '{x=$2; sub(/^[^@]*@/,"",x); if (x==h) {print $1; exit}}' "$MAPFILE" 2>/dev/null)
+        [[ -n "$_rs_clash" ]] && {
+            printf "Can't restore '%s': its last address %s now belongs to '%s'.\n" "$2" "$_rs_host" "$_rs_clash"
+            printf "Restore it anyway with a new address: s --add %s <user@ip>\n" "$2"; exit 1; }
+        printf '%s %s\n' "$2" "$_rs_line" >> "$MAPFILE"
+        _dedup_mapfile "$MAPFILE"
+        printf "Restored: %s → %s\n" "$2" "$_rs_line"
+        _sync_push
+        ;;
+
     --rename)
         [[ -z "$2" || -z "$3" ]] && {
             printf "Usage: s --rename <old-nickname> <new-nickname>\n"; exit 1; }
@@ -3282,7 +3374,6 @@ case "$1" in
             printf "Nickname '%s' already exists.\n" "$3"; exit 1; }
         _inplace_edit awk -v old="$2" -v new="$3" '$1==old{$1=new}{print}' "$MAPFILE"
         printf "Renamed: %s → %s\n" "$2" "$3"
-        _sync_remove_remote_nick "$2"
         _sync_push
         ;;
 
@@ -3292,13 +3383,12 @@ case "$1" in
         _nick_exists "$2" || {
             printf "Nickname '%s' not found.\n" "$2"; exit 1; }
         if [[ -t 0 ]]; then
-            printf "Remove '%s' from fleet? [y/N] " "$2"
+            printf "Retire '%s' from the fleet? (history is kept; undo with s --restore %s) [y/N] " "$2" "$2"
             read -r _confirm
             [[ ! "$_confirm" =~ ^[Yy]$ ]] && { printf "Aborted.\n"; exit 0; }
         fi
         _inplace_edit awk -v n="$2" '$1 != n' "$MAPFILE"
-        printf "Removed: %s\n" "$2"
-        _sync_remove_remote_nick "$2"
+        printf "Retired: %s  ${DIM}(history kept — undo: s --restore %s)${RESET}\n" "$2" "$2"
         _sync_push
         ;;
 
@@ -3476,39 +3566,23 @@ case "$1" in
             printf "Syncing with %s...\n" "$SYNC_HOST"
         fi
 
-        # Ensure the remote directory exists
-        ssh -q -o BatchMode=yes -o ConnectTimeout=10 \
-            "$SYNC_HOST" "mkdir -p \$(dirname ~/${SYNC_REMOTE_PATH})" 2>/dev/null
-
         _sync_rdir=$(_sync_remote_dir)
-        # Pull remote → local; if remote has no file yet, push ours as the seed
-        _sdl=$(mktemp "$CONFIG_DIR/.pull.XXXXXX")
-        if scp -q -o BatchMode=yes -o ConnectTimeout=10 \
-                "${SYNC_HOST}:${SYNC_REMOTE_PATH}" "$_sdl" 2>/dev/null; then
-            # Merge, don't overwrite — a straight overwrite here would silently
-            # discard any local-only change (e.g. a rename) not yet pushed.
-            _merge_remote_mapfile "$_sdl"
-            rm -f "$_sdl"
-            _dedup_mapfile "$MAPFILE"
-            printf "  ${GREEN}merged${RESET}   %s:%s\n" "$SYNC_HOST" "$SYNC_REMOTE_PATH"
-            _mapfile_has_entries && scp -q -o BatchMode=yes -o ConnectTimeout=10 \
-                "$MAPFILE" "${SYNC_HOST}:${SYNC_REMOTE_PATH}" 2>/dev/null \
-                && printf "  ${GREEN}pushed${RESET}   %s → %s:%s\n" "$MAPFILE" "$SYNC_HOST" "$SYNC_REMOTE_PATH"
-            _spdl=$(mktemp "$CONFIG_DIR/.pull.XXXXXX")
-            scp -q -o BatchMode=yes -o ConnectTimeout=10 \
-                "${SYNC_HOST}:${PATHS_SYNC_REMOTE_PATH}" "$_spdl" 2>/dev/null \
-                && { mv "$_spdl" "$PATHS_FILE"; printf "  ${GREEN}pulled${RESET}   %s:%s\n" "$SYNC_HOST" "$PATHS_SYNC_REMOTE_PATH"; } \
-                || rm -f "$_spdl"
-            _sfdl=$(mktemp "$CONFIG_DIR/.pull.XXXXXX")
-            scp -q -o BatchMode=yes -o ConnectTimeout=10 \
-                "${SYNC_HOST}:${FAVS_SYNC_REMOTE_PATH}" "$_sfdl" 2>/dev/null \
-                && { mv "$_sfdl" "$FAVS_FILE"; printf "  ${GREEN}pulled${RESET}   %s:%s\n" "$SYNC_HOST" "$FAVS_SYNC_REMOTE_PATH"; } \
-                || rm -f "$_sfdl"
-            _sudl=$(mktemp "$CONFIG_DIR/.pull.XXXXXX")
-            scp -q -o BatchMode=yes -o ConnectTimeout=10 \
-                "${SYNC_HOST}:${USERS_SYNC_REMOTE_PATH}" "$_sudl" 2>/dev/null \
-                && { mv "$_sudl" "$USERS_FILE"; printf "  ${GREEN}pulled${RESET}   %s:%s\n" "$SYNC_HOST" "$USERS_SYNC_REMOTE_PATH"; } \
-                || rm -f "$_sudl"
+        _dedup_mapfile "$MAPFILE"
+        if _fleet_sync; then
+            printf "  ${GREEN}fleet${RESET}    %s:%s  ${DIM}(%d new event(s) pushed, %d devices)${RESET}\n" \
+                "$SYNC_HOST" "$FLEET_LOG_REMOTE" "${FLEET_PUSHED:-0}" "$(grep -cv '^[[:space:]]*$' "$MAPFILE" 2>/dev/null)"
+            # Pull paths/favorites/users; seed them from local if the host has none yet
+            for _sf in "$PATHS_FILE:$PATHS_SYNC_REMOTE_PATH" "$FAVS_FILE:$FAVS_SYNC_REMOTE_PATH" "$USERS_FILE:$USERS_SYNC_REMOTE_PATH"; do
+                _sl="${_sf%%:*}"; _sr="${_sf#*:}"
+                _sdl=$(mktemp "$CONFIG_DIR/.pull.XXXXXX")
+                if scp -q -o BatchMode=yes -o ConnectTimeout=10 "${SYNC_HOST}:${_sr}" "$_sdl" 2>/dev/null; then
+                    mv "$_sdl" "$_sl"; printf "  ${GREEN}pulled${RESET}   %s:%s\n" "$SYNC_HOST" "$_sr"
+                else
+                    rm -f "$_sdl"
+                    [[ -f "$_sl" ]] && scp -q -o BatchMode=yes -o ConnectTimeout=10 "$_sl" "${SYNC_HOST}:${_sr}" 2>/dev/null \
+                        && printf "  ${GREEN}pushed${RESET}   %s → %s:%s\n" "$_sl" "$SYNC_HOST" "$_sr"
+                fi
+            done
             # Grab the remote version file so bg-check knows we're current
             scp -q -o BatchMode=yes -o ConnectTimeout=5 \
                 "${SYNC_HOST}:${_sync_rdir}/.machines_version" \
@@ -3516,38 +3590,7 @@ case "$1" in
             touch "$CONFIG_DIR/.last_sync" 2>/dev/null
             printf "  ${DIM}next background check in 30s${RESET}\n"
         else
-            rm -f "$_sdl"
-            # Try to push (seeds remote if it doesn't exist yet)
-            _dedup_mapfile "$MAPFILE"
-            if _mapfile_has_entries && scp -q -o BatchMode=yes -o ConnectTimeout=10 \
-                    "$MAPFILE" "${SYNC_HOST}:${SYNC_REMOTE_PATH}" 2>/dev/null; then
-                [[ -f "$PATHS_FILE" ]] && \
-                    scp -q -o BatchMode=yes -o ConnectTimeout=10 \
-                        "$PATHS_FILE" "${SYNC_HOST}:${PATHS_SYNC_REMOTE_PATH}" 2>/dev/null \
-                    && printf "  ${GREEN}pushed${RESET}   %s → %s:%s\n" \
-                        "$PATHS_FILE" "$SYNC_HOST" "$PATHS_SYNC_REMOTE_PATH"
-                [[ -f "$FAVS_FILE" ]] && \
-                    scp -q -o BatchMode=yes -o ConnectTimeout=10 \
-                        "$FAVS_FILE" "${SYNC_HOST}:${FAVS_SYNC_REMOTE_PATH}" 2>/dev/null \
-                    && printf "  ${GREEN}pushed${RESET}   %s → %s:%s\n" \
-                        "$FAVS_FILE" "$SYNC_HOST" "$FAVS_SYNC_REMOTE_PATH"
-                [[ -f "$USERS_FILE" ]] && \
-                    scp -q -o BatchMode=yes -o ConnectTimeout=10 \
-                        "$USERS_FILE" "${SYNC_HOST}:${USERS_SYNC_REMOTE_PATH}" 2>/dev/null \
-                    && printf "  ${GREEN}pushed${RESET}   %s → %s:%s\n" \
-                        "$USERS_FILE" "$SYNC_HOST" "$USERS_SYNC_REMOTE_PATH"
-                # Bump version file so everyone picks it up
-                _sync_ver=$(date +%s)
-                ssh -q -o BatchMode=yes -o ConnectTimeout=5 \
-                    "$SYNC_HOST" "echo $_sync_ver > ~/${_sync_rdir}/.machines_version" 2>/dev/null
-                echo "$_sync_ver" > "$CONFIG_DIR/.machines_version" 2>/dev/null
-                printf "  ${GREEN}pushed${RESET}   %s → %s:%s\n" \
-                    "$MAPFILE" "$SYNC_HOST" "$SYNC_REMOTE_PATH"
-                touch "$CONFIG_DIR/.last_sync" 2>/dev/null
-                printf "  ${DIM}next background check in 30s${RESET}\n"
-            else
-                printf "  ${DIM}fleet server unreachable — using local copy${RESET}\n"
-            fi
+            printf "  ${DIM}fleet server unreachable — using local copy (edits go out on the next sync)${RESET}\n"
         fi
 
         # Process any pending key registrations submitted by users via s --register

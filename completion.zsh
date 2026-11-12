@@ -37,7 +37,9 @@ _ssh_shorty() {
     '--add-alt:add an alternate address for a device'
     '--remove-alt:remove an alternate address from a device'
     '--rename:rename a device'
-    '--remove:remove a device'
+    '--remove:retire a device (history kept)'
+    '--restore:bring back a retired device'
+    '--history:IP/edit history of a device'
     '--tag:add a tag to a device'
     '--untag:remove a tag from a device'
     '--set-host:configure SYNC_HOST (creates its folder)'
@@ -268,8 +270,15 @@ _ssh_shorty() {
     fi
   else
     case "$first" in
-      --set|--set-mac|--add-alt|--remove-alt|--rename|--remove|--tunnel|-t)
+      --set|--set-mac|--add-alt|--remove-alt|--rename|--remove|--history|--tunnel|-t)
         (( CURRENT == 3 )) && _describe 'machine' machines
+        ;;
+      --restore)
+        if (( CURRENT == 3 )); then
+          local -a retired
+          retired=(${(f)"$(awk 'NF>=4 && $1 ~ /^[0-9]+$/ {print $1, NR, $3, $4}' "$HOME/.config/ssh_shorty/machines-main.txt" 2>/dev/null | sort -s -k1,1n -k2,2n | awk '{st[$3]=$4} END {for (n in st) if (st[n]=="retire") print n}')"})
+          (( ${#retired} )) && compadd -- "${retired[@]}"
+        fi
         ;;
       --ping|-p)
         if (( CURRENT == 3 )); then

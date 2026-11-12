@@ -14,7 +14,7 @@ _ssh_shorty_complete() {
         [[ "${COMP_WORDS[i]}" == ":" ]] && (( cword -= 2 ))
     done
 
-    local subcommands="--list --add --set --set-mac --add-alt --remove-alt --rename --remove --tag --untag --set-host --unset-host --sync --ping --oneshot --poll --edit --paths --help --update --fav --status --watch --run --run-script --script --sysinfo --tail --tunnel --close --register --export-ssh-config --keydeploy --last --import -u --upload --docker-cp --docker-download --docker-edit -d --download --view -m"
+    local subcommands="--list --add --set --set-mac --add-alt --remove-alt --rename --remove --restore --history --tag --untag --set-host --unset-host --sync --ping --oneshot --poll --edit --paths --help --update --fav --status --watch --run --run-script --script --sysinfo --tail --tunnel --close --register --export-ssh-config --keydeploy --last --import -u --upload --docker-cp --docker-download --docker-edit -d --download --view -m"
     local mapfile_path="$HOME/.config/ssh_shorty/machines.txt"
     local paths_file="$HOME/.config/ssh_shorty/machine-paths.txt"
     local scripts_file="$HOME/.config/ssh_shorty/scripts.txt"
@@ -222,9 +222,13 @@ _ssh_shorty_complete() {
         fi
     else
         case "$first" in
-            --set|-s|--set-mac|--add-alt|--remove-alt|--rename|--remove|-r|--poll|--tunnel|-t)
+            --set|-s|--set-mac|--add-alt|--remove-alt|--rename|--remove|-r|--history|--poll|--tunnel|-t)
                 [[ "$cword" -eq 2 ]] && \
                     COMPREPLY=( $(compgen -W "${machines[*]}" -- "$cur") )
+                ;;
+            --restore)
+                [[ "$cword" -eq 2 ]] && \
+                    COMPREPLY=( $(compgen -W "$(awk 'NF>=4 && $1 ~ /^[0-9]+$/ {print $1, NR, $3, $4}' "$HOME/.config/ssh_shorty/machines-main.txt" 2>/dev/null | sort -s -k1,1n -k2,2n | awk '{st[$3]=$4} END {for (n in st) if (st[n]=="retire") print n}')" -- "$cur") )
                 ;;
             --ping|-p)
                 if [[ "$cword" -eq 2 ]]; then
